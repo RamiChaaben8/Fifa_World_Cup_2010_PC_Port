@@ -1,0 +1,17 @@
+# Function Boundary Overrides for default.xex (2010 FIFA World Cup South Africa)
+#
+# Round 14 (2026-10-17): of the 83 no-block stubs, 14 are reached by an emitted
+# `sub_X(ctx, base)` call. This is the single one in default.xex: 0x8211A170 is a
+# 2-instruction epilogue/tail fragment ending in `b 0x82118AB8` (a registered
+# function), so its tail `b` was emitted as a call and the empty stub returned
+# immediately, skipping the target. `end` is the CFG-validated extent (max
+# reachable + 4), exclusive.
+#
+# TOML schema (from ReXGlue src/codegen/config.cpp:178):
+#   [functions] is a table keyed by a hex address string; optional keys: size, end,
+#   name, parent, share_registers. `end` is EXCLUSIVE (config.h:47).
+# The other 82 no-block stubs (all in fifadllzf.xex) are handled in
+# config/fifadllzf_overrides.toml.
+
+[functions]
+"8211A170" = { end = 0x8211A178 }

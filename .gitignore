@@ -1,0 +1,31 @@
+# Game data – never commit
+dist/
+*.iso
+*.xex
+*.dec.bin
+*.big
+*.bh
+
+# Build output / binaries
+*.exe
+*.dll
+*.pdb
+*.obj
+*.lib
+out/
+build/
+generated/
+
+# SDK – separate project, not part of this repo
+ReXGlue/
+
+# Installer tools (bundled binaries)
+Installer/tools/
+
+# Logs, crashes, temp
+*.log
+*.dmp
+*.tmp
+
+# Secrets / environment
+.env

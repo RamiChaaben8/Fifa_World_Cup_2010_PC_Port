@@ -1,0 +1,81 @@
+diff --git a/src/system/xmemory.cpp b/src/system/xmemory.cpp
+index 121f321..0064a8e 100644
+--- a/src/system/xmemory.cpp
++++ b/src/system/xmemory.cpp
+@@ -10,6 +10,7 @@
+  */
+ 
+ #include <algorithm>
++#include <atomic>
+ #include <cstring>
+ #include <utility>
+ 
+@@ -542,6 +543,68 @@ bool Memory::AccessViolationCallback(std::unique_lock<std::recursive_mutex> glob
+   }
+   uint32_t virtual_address = HostToGuestVirtual(host_address);
+   BaseHeap* heap = LookupHeap(virtual_address);
++
++  // On-demand commit for the low guest virtual heaps (v00000000, v40000000).
++  //
++  // The 4 GB guest arena is a single SEC_RESERVE file mapping: its pages are
++  // reserved on the host until something commits them, and an access to a page
++  // that was never committed raises the violation handled here. The guest can
++  // read or write such a page without ever issuing an explicit commit - the
++  // guest's own page table says "free" and the value it expects is zero - so
++  // treat the trap as an implicit commit, the same shape Memory::Initialize
++  // already uses for the eagerly committed regions (the first 64 KB of
++  // v00000000, the GPU writeback windows, the physical range).
++  //
++  // Scope: only the two kGuestVirtual heaps, and only an address inside the
++  // heap. kGuestXex (the XEX image) faults are genuine bad pointers, and the
++  // physical/MMIO path below is unchanged, so everything else still reaches the
++  // fatal error below.
++  //
++  // First touch of a reserved page yields a zero-filled page from the OS, which
++  // is what a guest that never wrote there would observe. A page that was
++  // decommitted after a write is deliberately NOT re-zeroed: BaseHeap::Decommit
++  // leaves the host page intact ("mapped memory cannot be decommitted"), so
++  // re-committing it returns the previous contents, matching that behaviour.
++  if (heap && heap->heap_type() == memory::HeapType::kGuestVirtual &&
++      virtual_address >= heap->heap_base() &&
++      (virtual_address - heap->heap_base()) < heap->heap_size()) {
++    // Bounded so a wild pointer cannot commit the whole heap; reaching the limit
++    // falls through to the fatal path below.
++    constexpr uint32_t kGuestVirtualFaultCommitLimit = 4096;  // 16 MiB of 4 KiB pages
++    static std::atomic<uint32_t> guest_virtual_fault_commits{0};
++    const uint32_t fault_page_size = heap->page_size();
++    const uint32_t fault_page = virtual_address - (virtual_address % fault_page_size);
++    if (guest_virtual_fault_commits.load(std::memory_order_relaxed) >=
++        kGuestVirtualFaultCommitLimit) {
++      REXSYS_ERROR(
++          "Guest virtual on-demand commit limit ({} pages) reached; guest 0x{:08X} falls back to "
++          "the fatal path",
++          kGuestVirtualFaultCommitLimit, virtual_address);
++    } else {
++      HeapAllocationInfo fault_info{};
++      const bool was_committed = heap->QueryRegionInfo(fault_page, &fault_info) &&
++                                 (fault_info.state & memory::kMemoryAllocationCommit);
++      // Commit-only: on a reserved page this commits it, and on an unreserved
++      // page BaseHeap::AllocFixed promotes it to reserve + commit, the same
++      // promotion (and log line) that a guest commit would take. The range is
++      // inside the heap and page-aligned, so no region descriptor is rewritten.
++      if (heap->AllocFixed(fault_page, fault_page_size, fault_page_size,
++                           memory::kMemoryAllocationCommit,
++                           memory::kMemoryProtectRead | memory::kMemoryProtectWrite)) {
++        const uint32_t commit_count =
++            guest_virtual_fault_commits.fetch_add(1, std::memory_order_relaxed) + 1;
++        REXSYS_WARN(
++            "Guest virtual {} of 0x{:08X} (host 0x{:016X}) committed on demand as page 0x{:08X} "
++            "({}); total {}",
++            is_write ? "write" : "read", virtual_address,
++            static_cast<uint64_t>(reinterpret_cast<uintptr_t>(host_address)), fault_page,
++            was_committed ? "recommit" : "first touch", commit_count);
++        return true;
++      }
++      REXSYS_ERROR("Guest virtual on-demand commit failed for guest 0x{:08X}", fault_page);
++    }
++  }
++
+   if (!heap || heap->heap_type() != memory::HeapType::kGuestPhysical) {
+     REXSYS_ERROR(
+         "Unhandled guest access violation: {} of guest 0x{:08X} (host 0x{:016X}) on thread 0x{:X}",

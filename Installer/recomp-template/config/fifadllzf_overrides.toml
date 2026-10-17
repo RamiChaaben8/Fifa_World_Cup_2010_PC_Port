@@ -1,0 +1,348 @@
+# Function Boundary Overrides for fifadllzf.xex (2010 FIFA World Cup South Africa)
+#
+# Stage 6 (2026-10-17): first-boot crash at an unregistered indirect-call target.
+#
+#   0x835F7700 is a real 5-instruction leaf function (raw bytes + disassembly
+#   recorded in NOTES.md):
+#       cmplwi cr6,r3,0 / addi r3,r3,8 / bclr 4,26 / li r3,0 / blr
+#   It sits in the gap between the registered function 0x835F76D8
+#   (10 instructions, 0x835F76D8..0x835F7700, ends in an unconditional bctr)
+#   and the registered function 0x835F7718. It is absent from .pdata and is
+#   only referenced from .rdata pointer tables, so analysis never discovered it.
+#
+# Stage 6b (2026-10-17): crash #2 at 0x82650648 (another unregistered
+#   indirect-call target reached from a vtable). Batch of the 184 bctr-preceded,
+#   CFG-valid vtable-run targets below (183 new + 0x835F7700). Each was verified
+#   to decode as a complete function (every control path ends at blr/bctr or an
+#   out-of-range tail 'b'), with NO registered function inside its range, and
+#   NOT a jump-table case body (no resolved switch table points into the range).
+#
+#   TOML schema (from ReXGlue src/codegen/config.cpp:178):
+#     [functions] is a table keyed by a hex address string. Each value is a table
+#     with optional keys: size, end, name, parent, share_registers.
+#   `end` is EXCLUSIVE (ReXGlue include/rex/codegen/config.h:47:
+#     "uint32_t end = 0;     // End address, exclusive").
+#
+#   The other 82 CFG-valid run targets are intentionally omitted; add one at a
+#   time only if a boot crash points at it.
+
+[functions]
+"835F7700" = { end = 0x835F7714 }
+# --- Stage 6b batch (183 entries) ---
+"82650648" = { end = 0x8265064C }
+"827B60E0" = { end = 0x827B60F0 }
+"82AD8C60" = { end = 0x82AD8C88 }
+"82AD8C88" = { end = 0x82AD8CB0 }
+"82ADCBF0" = { end = 0x82ADCBFC }
+"82C44098" = { end = 0x82C440A8 }
+"82A9F6C8" = { end = 0x82A9F70C }
+"82BD8020" = { end = 0x82BD8028 }
+"827B64E8" = { end = 0x827B6510 }
+"827B6510" = { end = 0x827B6538 }
+"827B6538" = { end = 0x827B6560 }
+"827B6560" = { end = 0x827B6588 }
+"82C5BEB0" = { end = 0x82C5BED4 }
+"827B6990" = { end = 0x827B69B0 }
+"82BD9AD0" = { end = 0x82BD9AF0 }
+"83051ED0" = { end = 0x83051EE8 }
+"83051EE8" = { end = 0x83051F00 }
+"831BCEC8" = { end = 0x831BCED0 }
+"83355840" = { end = 0x8335584C }
+"837C3EC0" = { end = 0x837C3EF0 }
+"8265A330" = { end = 0x8265A354 }
+"8265A370" = { end = 0x8265A394 }
+"8268FC70" = { end = 0x8268FC8C }
+"828BDC08" = { end = 0x828BDC14 }
+"828E56C0" = { end = 0x828E56D8 }
+"82A24B40" = { end = 0x82A24B4C }
+"82A70878" = { end = 0x82A70890 }
+"82A93CA8" = { end = 0x82A93CD8 }
+"82A93CD8" = { end = 0x82A93D08 }
+"82A93D08" = { end = 0x82A93D38 }
+"82A93D38" = { end = 0x82A93D68 }
+"82A93D68" = { end = 0x82A93D98 }
+"82A93D98" = { end = 0x82A93DC8 }
+"82A93DC8" = { end = 0x82A93E34 }
+"82A95B50" = { end = 0x82A95B5C }
+"82AC2F00" = { end = 0x82AC2F20 }
+"82AC62F0" = { end = 0x82AC62F8 }
+"82AC8180" = { end = 0x82AC81B0 }
+"82ACD620" = { end = 0x82ACD630 }
+"82AD9E78" = { end = 0x82AD9E98 }
+"82AD9E98" = { end = 0x82AD9EA0 }
+"82ADA110" = { end = 0x82ADA130 }
+"82ADA220" = { end = 0x82ADA240 }
+"82ADA240" = { end = 0x82ADA258 }
+"82ADA430" = { end = 0x82ADA450 }
+"82ADA450" = { end = 0x82ADA470 }
+"82ADA4E0" = { end = 0x82ADA500 }
+"82ADA5E0" = { end = 0x82ADA600 }
+"82ADA600" = { end = 0x82ADA620 }
+"82ADA828" = { end = 0x82ADA848 }
+"82ADA948" = { end = 0x82ADA968 }
+"82ADA968" = { end = 0x82ADA970 }
+"82ADAA08" = { end = 0x82ADAA14 }
+"82ADB160" = { end = 0x82ADB180 }
+"82ADB180" = { end = 0x82ADB188 }
+"82ADB1C0" = { end = 0x82ADB1E0 }
+"82ADB1E0" = { end = 0x82ADB1E8 }
+"82ADB6E8" = { end = 0x82ADB704 }
+"82ADCAB0" = { end = 0x82ADCAC0 }
+"82ADCAC0" = { end = 0x82ADCAD0 }
+"82ADCAD0" = { end = 0x82ADCAE0 }
+"82ADCAE0" = { end = 0x82ADCAF0 }
+"82ADCAF0" = { end = 0x82ADCB00 }
+"82ADCB00" = { end = 0x82ADCB10 }
+"82ADCB10" = { end = 0x82ADCB20 }
+"82ADCB20" = { end = 0x82ADCB28 }
+"82ADCB98" = { end = 0x82ADCBA4 }
+"82AE39A0" = { end = 0x82AE39A8 }
+"82AE3F70" = { end = 0x82AE3F90 }
+"82AE3FB0" = { end = 0x82AE3FB8 }
+"82AE8B78" = { end = 0x82AE8B80 }
+"82AE8C40" = { end = 0x82AE8C54 }
+"82AED120" = { end = 0x82AED130 }
+"82AF20E8" = { end = 0x82AF20F0 }
+"82AF82D8" = { end = 0x82AF82F4 }
+"82AF8318" = { end = 0x82AF8334 }
+"82AFD588" = { end = 0x82AFD5A8 }
+"82AFD920" = { end = 0x82AFD950 }
+"82B06050" = { end = 0x82B0606C }
+"82B06860" = { end = 0x82B06890 }
+"82B15640" = { end = 0x82B15658 }
+"82B15658" = { end = 0x82B1565C }
+"82B156A8" = { end = 0x82B156C0 }
+"82B156C0" = { end = 0x82B156E0 }
+"82B156E0" = { end = 0x82B156E8 }
+"82B15700" = { end = 0x82B15718 }
+"82B15718" = { end = 0x82B15730 }
+"82B15730" = { end = 0x82B15748 }
+"82B15748" = { end = 0x82B15760 }
+"82B15760" = { end = 0x82B15778 }
+"82B15778" = { end = 0x82B15790 }
+"82B15790" = { end = 0x82B157A8 }
+"82B157A8" = { end = 0x82B157C0 }
+"82B157C0" = { end = 0x82B157D8 }
+"82B157D8" = { end = 0x82B157F0 }
+"82B157F0" = { end = 0x82B15808 }
+"82B15808" = { end = 0x82B15820 }
+"82B15820" = { end = 0x82B15838 }
+"82B15838" = { end = 0x82B15850 }
+"82B15850" = { end = 0x82B15868 }
+"82B15868" = { end = 0x82B15880 }
+"82B15880" = { end = 0x82B15898 }
+"82B15898" = { end = 0x82B158B0 }
+"82B158B0" = { end = 0x82B158C8 }
+"82B158C8" = { end = 0x82B158E0 }
+"82B158E0" = { end = 0x82B158F8 }
+"82BC6550" = { end = 0x82BC6558 }
+"82BC7EE0" = { end = 0x82BC7EF8 }
+"82BC7EF8" = { end = 0x82BC7F10 }
+"82BCC5A0" = { end = 0x82BCC5C0 }
+"82BCC5C0" = { end = 0x82BCC5CC }
+"82BCD4E0" = { end = 0x82BCD500 }
+"82BCD500" = { end = 0x82BCD508 }
+"82BD7EF0" = { end = 0x82BD7F08 }
+"82BD7F08" = { end = 0x82BD7F20 }
+"82BD81F0" = { end = 0x82BD8208 }
+"82BD8270" = { end = 0x82BD827C }
+"82BD84F8" = { end = 0x82BD8510 }
+"82BD8FB8" = { end = 0x82BD8FC0 }
+"82BD9980" = { end = 0x82BD99A0 }
+"82BD99A0" = { end = 0x82BD99A8 }
+"82BD9AF0" = { end = 0x82BD9AF8 }
+"82BDBCF8" = { end = 0x82BDBD18 }
+"82BDBD18" = { end = 0x82BDBD38 }
+"82BDBD38" = { end = 0x82BDBD58 }
+"82BDBD58" = { end = 0x82BDBD78 }
+"82BDBD78" = { end = 0x82BDBD98 }
+"82BDBD98" = { end = 0x82BDBDB8 }
+"82BDBDB8" = { end = 0x82BDBDD8 }
+"82BDC1C8" = { end = 0x82BDC1E0 }
+"82BDC1E0" = { end = 0x82BDC1F8 }
+"82BDC1F8" = { end = 0x82BDC210 }
+"82BDC210" = { end = 0x82BDC228 }
+"82BDC228" = { end = 0x82BDC240 }
+"82BDC240" = { end = 0x82BDC258 }
+"82BDC258" = { end = 0x82BDC270 }
+"82BDC270" = { end = 0x82BDC288 }
+"82BDC288" = { end = 0x82BDC2A0 }
+"82BDC2A0" = { end = 0x82BDC2B8 }
+"82BDC2B8" = { end = 0x82BDC2D0 }
+"82BDC2D0" = { end = 0x82BDC2E8 }
+"82BDC2E8" = { end = 0x82BDC300 }
+"82BDC300" = { end = 0x82BDC318 }
+"82BDC318" = { end = 0x82BDC330 }
+"82BDC330" = { end = 0x82BDC338 }
+"82BDCEB0" = { end = 0x82BDCED0 }
+"82BDCED0" = { end = 0x82BDCED8 }
+"82BE5C98" = { end = 0x82BE5CB8 }
+"82BE5CB8" = { end = 0x82BE5CC0 }
+"82BFA160" = { end = 0x82BFA174 }
+"82BFB598" = { end = 0x82BFB5A8 }
+"82C139F8" = { end = 0x82C13A1C }
+"82C1BD98" = { end = 0x82C1BDBC }
+"82CCA138" = { end = 0x82CCA148 }
+"82D8D2F8" = { end = 0x82D8D300 }
+"82DB5DF8" = { end = 0x82DB5E10 }
+"82DB5E10" = { end = 0x82DB5E28 }
+"82ED8568" = { end = 0x82ED8580 }
+"82F19038" = { end = 0x82F1903C }
+"82F1D970" = { end = 0x82F1D97C }
+"82F58EB8" = { end = 0x82F58F28 }
+"82FEFB18" = { end = 0x82FEFB34 }
+"83051F00" = { end = 0x83051F58 }
+"8314DB68" = { end = 0x8314DB80 }
+"831A96E8" = { end = 0x831A9700 }
+"832204B0" = { end = 0x832204C0 }
+"83227288" = { end = 0x8322729C }
+"8322D260" = { end = 0x8322D274 }
+"83355768" = { end = 0x83355774 }
+"83355800" = { end = 0x8335580C }
+"8365B660" = { end = 0x8365B668 }
+"837C3E90" = { end = 0x837C3EC0 }
+"837C3EF0" = { end = 0x837C3F20 }
+"837C3F20" = { end = 0x837C3F50 }
+"837C4058" = { end = 0x837C4088 }
+"837C4088" = { end = 0x837C4090 }
+"837D7698" = { end = 0x837D76C8 }
+"837E70F0" = { end = 0x837E7124 }
+"837ECE80" = { end = 0x837ECEB8 }
+"837ECEB8" = { end = 0x837ECEF0 }
+"837ED450" = { end = 0x837ED484 }
+"837EDBA0" = { end = 0x837EDBE4 }
+"838050A8" = { end = 0x838050D8 }
+# --- Stage 6c (2026-10-17): added one at a time per instruction ---
+#   Crash #3 (boot 12:00): target 0x82EEFB68, one of the 82 omitted candidates
+#   (all 82 are preceded by a tail 'b'; the 184 batch was bctr-preceded).
+#   0x82EEFB68 is a real 55-instruction function, terms blr @0x82EEFC40,
+#   end 0x82EEFC44 (exclusive). Reached via vtable slot 0x10.
+"82EEFB68" = { end = 0x82EEFC44 }
+#   Crash #4 (boot 12:09): target 0x82883A48 (also one of the 82 omitted, tail-b-
+#   preceded). 3 instructions: lwz r11,8(r3); lbz r3,0x60(r11); blr.
+"82883A48" = { end = 0x82883A54 }
+
+# --- Stage 6d (2026-10-17): remaining 80 omitted (tail-b-preceded) vtable-run
+#   targets. Each validated as a complete CFG function (every path ends at
+#   blr/bctr or an out-of-range tail 'b'), with no registered function inside its
+#   range, not a jump-table case body, and no branch in the preceding function
+#   targeting into the range. (The preceding tail 'b' tail-calls a shared
+#   epilogue; it is not a self-loop. Preceding-function start = address after the
+#   2nd unconditional terminator going back.) ---
+"83187BC0" = { end = 0x83187BEC }
+"831A4820" = { end = 0x831A4828 }
+"831A4828" = { end = 0x831A4830 }
+"831A8E50" = { end = 0x831A8E58 }
+"831A8E58" = { end = 0x831A8E60 }
+"831A8E60" = { end = 0x831A8E68 }
+"831A8E68" = { end = 0x831A8E70 }
+"831A8E80" = { end = 0x831A8E88 }
+"831A90F8" = { end = 0x831A9100 }
+"831A9108" = { end = 0x831A9110 }
+"831A9110" = { end = 0x831A9118 }
+"83265768" = { end = 0x8326576C }
+"82A62CA8" = { end = 0x82A62CAC }
+"82BCD2B8" = { end = 0x82BCD2C0 }
+"82BCD2D0" = { end = 0x82BCD2D8 }
+"82BCD2D8" = { end = 0x82BCD2E0 }
+"82BCD2E0" = { end = 0x82BCD2E8 }
+"82BCF108" = { end = 0x82BCF110 }
+"82BCF110" = { end = 0x82BCF118 }
+"82BCF118" = { end = 0x82BCF120 }
+"831A4840" = { end = 0x831A4848 }
+"8324A980" = { end = 0x8324A988 }
+"83265478" = { end = 0x8326547C }
+"832C04D8" = { end = 0x832C04E0 }
+"83359A20" = { end = 0x83359A24 }
+"83367530" = { end = 0x83367538 }
+"83367538" = { end = 0x83367574 }
+"833676F0" = { end = 0x833676F8 }
+"82BCBA08" = { end = 0x82BCBA10 }
+"82BCBDA0" = { end = 0x82BCBDA8 }
+"831A8E88" = { end = 0x831A8E90 }
+"831A90F0" = { end = 0x831A90F8 }
+"831A9100" = { end = 0x831A9108 }
+"837A6C70" = { end = 0x837A6CA0 }
+"826A6C90" = { end = 0x826A6CC0 }
+"826A6CC0" = { end = 0x826A6CF0 }
+"8286B418" = { end = 0x8286B42C }
+"82A2DA30" = { end = 0x82A2DA38 }
+"82A2DA60" = { end = 0x82A2DA68 }
+"82A2DA98" = { end = 0x82A2DAA0 }
+"82A2DAA8" = { end = 0x82A2DAB0 }
+"82A2DBC8" = { end = 0x82A2DBD0 }
+"82A2DBD0" = { end = 0x82A2DBD8 }
+"82A2DBD8" = { end = 0x82A2DBE0 }
+"82A2DBE8" = { end = 0x82A2DBF0 }
+"82A2DBF0" = { end = 0x82A2DBF8 }
+"82A2DBF8" = { end = 0x82A2DC00 }
+"82A2DC08" = { end = 0x82A2DC10 }
+"82A2DC10" = { end = 0x82A2DC18 }
+"82A2DC18" = { end = 0x82A2DC20 }
+"82A2DC20" = { end = 0x82A2DC38 }
+"82B02B20" = { end = 0x82B02B30 }
+"82B0E078" = { end = 0x82B0E0A0 }
+"82B0E0A8" = { end = 0x82B0E0D0 }
+"82B0E0D8" = { end = 0x82B0E100 }
+"82BCBE90" = { end = 0x82BCBE98 }
+"82BCD2C0" = { end = 0x82BCD2C8 }
+"82BDBCD8" = { end = 0x82BDBCF8 }
+"82D8D7E0" = { end = 0x82D8D7E8 }
+"82D8D7E8" = { end = 0x82D8D7F0 }
+"82D8D7F0" = { end = 0x82D8D7F8 }
+"82D90A48" = { end = 0x82D90A50 }
+"82D91DE0" = { end = 0x82D91DEC }
+"82D95408" = { end = 0x82D95410 }
+"82DAF048" = { end = 0x82DAF05C }
+"82F1EFE8" = { end = 0x82F1F01C }
+"82F4F3D8" = { end = 0x82F4F3E0 }
+"831A4830" = { end = 0x831A4838 }
+"831A8E70" = { end = 0x831A8E78 }
+"831A90E0" = { end = 0x831A90E8 }
+"831AA300" = { end = 0x831AA308 }
+"831AB050" = { end = 0x831AB058 }
+"831AB058" = { end = 0x831AB060 }
+"831ADE50" = { end = 0x831ADE7C }
+"83214008" = { end = 0x83214010 }
+"8323F960" = { end = 0x8323F968 }
+"83264460" = { end = 0x83264468 }
+"832C05A8" = { end = 0x832C05B0 }
+"832C05B0" = { end = 0x832C05B8 }
+"83436700" = { end = 0x8343673C }
+
+# --- Round 14 Tier 1 (2026-10-17): the no-block stubs reached by a real call ---
+# Supersedes the "other 82 ... intentionally omitted" note above: of the 83 no-block stubs, 14 are
+# reached by an emitted `sub_X(ctx, base)` call and were silently returning immediately. 13 are in
+# this module; the 1 default.xex entry (0x8211A170) is in config/default_overrides.toml. `end` is the
+# CFG-validated extent (max reachable + 4), not the first terminator. End is exclusive.
+# Tiers 2/3 stay out: tier 2 is reached only by `goto loc_X` (its body is already emitted inside the
+# caller, so an entry would be a no-op) and tier 3's extent contains a sibling entry, so no contiguous
+# `end` can both cover the reachable code and avoid overlap.
+"82A63768" = { end = 0x82A6377C }
+"82ADF698" = { end = 0x82ADF6B0 }
+"82ADF6B0" = { end = 0x82ADF6C8 }
+"82BCBDB8" = { end = 0x82BCBDCC }
+"82DA6148" = { end = 0x82DA6154 }
+"831A11B8" = { end = 0x831A11C0 }
+"83232D58" = { end = 0x83232D6C }
+"8323FB38" = { end = 0x8323FB48 }
+"8323FB6C" = { end = 0x8323FB7C }
+"8323FB8C" = { end = 0x8323FBA0 }
+"837045C0" = { end = 0x837045CC }
+"83704A30" = { end = 0x83704A34 }
+"8375B9D0" = { end = 0x8375B9D4 }
+#
+# --- Stage 6e (2026-10-17, Round 23): target 0x83884CA0, the first stop after the
+#   temporary guest-virtual commit workaround let the game run past the old crash.
+#   Reached indirectly through function-pointer slot +0x24 of a runtime object: the
+#   pointer value is built by a unique `lis r9,0x8388` / `addi r9,r9,0x4CA0` pair at
+#   0x836D3320 and stored by `stw r9,0x24(r11)` at 0x836D3354; the crash call site
+#   0x838852B4/0x838852B8 loads `*(obj+0x24)` into r9 and `bctrl`s it (CTR=0x83884CA0,
+#   LR=0x838852BC). No 32-bit occurrence of the value exists anywhere in either image,
+#   and no `bl` targets it, which is why .pdata/.rdata analysis never found it.
+#   0x83884CA0 is a real, complete 19-instruction leaf function:
+#       mr r9,r5 / cmpldi / ... / <4 exit branches> / blr @0x83884CE8
+#   No registered function lies inside 0x83884CA0..0x83884CEC, and 0x83884CEC (which
+#   the four exit branches target) is itself an already-registered 2-instruction
+#   function (`addi r3,r9,1` / `blr`), so `end` is exclusive at 0x83884CEC.
+"83884CA0" = { end = 0x83884CEC }
