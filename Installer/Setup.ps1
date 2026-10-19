@@ -84,6 +84,24 @@ function Add-FieldLabel([string]$text, [int]$y) {
     $page.Controls.Add($label)
 }
 
+function Test-NeedsElevation([string]$Path) {
+    $candidate = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+    $protectedRoots = @(
+        [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles),
+        [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFilesX86),
+        [Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+    foreach ($rootPath in $protectedRoots) {
+        $rootFull = [IO.Path]::GetFullPath($rootPath).TrimEnd('\')
+        if ($candidate.Equals($rootFull, [StringComparison]::OrdinalIgnoreCase) -or
+            $candidate.StartsWith($rootFull + '\', [StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+    return $false
+}
+
 Add-FieldLabel 'Game ISO' 20
 $isoBox = New-Object System.Windows.Forms.TextBox
 $isoBox.Location = New-Object System.Drawing.Point(152, 21)
@@ -233,7 +251,11 @@ $installButton.Add_Click({
         $psi.FileName = $powershell
         $psi.Arguments = $args -join ' '
         $psi.WorkingDirectory = $root
-        $psi.UseShellExecute = $false
+        $psi.UseShellExecute = Test-NeedsElevation $destination
+        if ($psi.UseShellExecute) {
+            $psi.Verb = 'runas'
+            $status.Text = 'Windows will ask you to approve access to the protected install folder.'
+        }
         $psi.CreateNoWindow = $true
         $script:workerProcess = [System.Diagnostics.Process]::Start($psi)
         $installButton.Enabled = $false

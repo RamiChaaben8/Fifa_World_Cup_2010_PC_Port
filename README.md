@@ -11,7 +11,7 @@ some game paths may stop on missing recompiled functions or other compatibility 
 
 ### Installing from your own ISO (Windows x64)
 
-Download and run `FIFA-World-Cup-2010-Setup-v0.3.0.exe` from the GitHub v0.3 release, then select
+Download and run `FIFA-World-Cup-2010-Setup-v0.3.1.exe` from the GitHub v0.3 release, then select
 your legally obtained Xbox 360 ISO and an empty install folder. The single-file installer unpacks
 its own setup resources and builds the port locally; it does not upload or include your ISO/game data.
 The first run downloads Visual Studio C++ Build Tools, LLVM, portable Git, and the pinned ReXGlue

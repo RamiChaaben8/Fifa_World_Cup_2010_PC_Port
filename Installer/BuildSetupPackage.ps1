@@ -6,7 +6,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($Output)) {
-    $Output = Join-Path $repoRoot 'FIFA-World-Cup-2010-Setup-v0.3.0.exe'
+    $Output = Join-Path $repoRoot 'FIFA-World-Cup-2010-Setup-v0.3.1.exe'
 }
 $compiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 if (-not (Test-Path -LiteralPath $compiler -PathType Leaf)) { throw "C# compiler not found: $compiler" }
