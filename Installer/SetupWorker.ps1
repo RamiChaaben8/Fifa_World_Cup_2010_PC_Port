@@ -27,12 +27,25 @@ function Invoke-Tool([string]$File, [string[]]$Arguments, [string]$WorkingDirect
     $start.RedirectStandardError = $true
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $start
+    $logLock = New-Object object
+    $writer = [IO.StreamWriter]::new($LogPath, $true, [Text.UTF8Encoding]::new($false))
+    $writer.AutoFlush = $true
+    $outputHandler = [Diagnostics.DataReceivedEventHandler]{
+        param($sender, $eventArgs)
+        if ($null -ne $eventArgs.Data) {
+            [Threading.Monitor]::Enter($logLock)
+            try { $writer.WriteLine('[{0}] {1}' -f (Get-Date -Format 'HH:mm:ss'), $eventArgs.Data) }
+            finally { [Threading.Monitor]::Exit($logLock) }
+        }
+    }.GetNewClosure()
+    $process.add_OutputDataReceived($outputHandler)
+    $process.add_ErrorDataReceived($outputHandler)
     [void]$process.Start()
-    $stdout = $process.StandardOutput.ReadToEnd()
-    $stderr = $process.StandardError.ReadToEnd()
+    $process.BeginOutputReadLine()
+    $process.BeginErrorReadLine()
     $process.WaitForExit()
-    if ($stdout) { Add-Content -LiteralPath $LogPath -Value $stdout -Encoding UTF8 }
-    if ($stderr) { Add-Content -LiteralPath $LogPath -Value $stderr -Encoding UTF8 }
+    $process.WaitForExit()
+    $writer.Dispose()
     if ($process.ExitCode -ne 0) { throw "Tool failed with exit code $($process.ExitCode): $File" }
 }
 
@@ -105,22 +118,6 @@ function Import-VsEnvironment([string]$VsPath) {
     if (-not (Get-Command ninja.exe -ErrorAction SilentlyContinue)) { throw 'Ninja is missing from the Visual Studio installation.' }
 }
 
-function Ensure-Git {
-    if (Get-Command git.exe -ErrorAction SilentlyContinue) { return }
-    Write-SetupLog 'Downloading portable Git.'
-    $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/git-for-windows/git/releases/latest' -Headers @{ 'User-Agent' = 'FWC10-Setup' }
-    $asset = $release.assets | Where-Object { $_.name -like 'MinGit-*-64-bit.zip' } | Select-Object -First 1
-    if (-not $asset) { throw 'Could not find a portable Git download.' }
-    $tools = Join-Path $env:LOCALAPPDATA 'FWC10\tools'
-    $archive = Join-Path $tools $asset.name
-    $gitRoot = Join-Path $tools 'MinGit'
-    Download-File $asset.browser_download_url $archive
-    [void][IO.Directory]::CreateDirectory($gitRoot)
-    Expand-Archive -LiteralPath $archive -DestinationPath $gitRoot -Force
-    $env:PATH = "$(Join-Path $gitRoot 'cmd');$(Join-Path $gitRoot 'mingw64\bin');$env:PATH"
-    if (-not (Get-Command git.exe -ErrorAction SilentlyContinue)) { throw 'Portable Git was extracted but git.exe could not be found.' }
-}
-
 function Ensure-LLVM {
     $llvmRoot = Join-Path $env:LOCALAPPDATA 'FWC10\tools\LLVM-20.1.8'
     $llvmBin = Join-Path $llvmRoot 'bin'
@@ -135,9 +132,14 @@ function Ensure-LLVM {
         if ($fallback) {
             $llvmBin = $fallback
         } else {
-            Write-SetupLog 'Downloading the pinned LLVM 20.1.8 compiler (about 386 MB).'
-            $installer = Join-Path $env:LOCALAPPDATA 'FWC10\downloads\LLVM-20.1.8-win64.exe'
-            Download-File 'https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.8/LLVM-20.1.8-win64.exe' $installer
+            $installer = Join-Path $PackageRoot 'Installer\tools\LLVM-20.1.8-win64.exe'
+            if (Test-Path -LiteralPath $installer -PathType Leaf) {
+                Write-SetupLog 'Using the LLVM 20.1.8 installer embedded in setup.'
+            } else {
+                Write-SetupLog 'Downloading the pinned LLVM 20.1.8 compiler (about 386 MB).'
+                $installer = Join-Path $env:LOCALAPPDATA 'FWC10\downloads\LLVM-20.1.8-win64.exe'
+                Download-File 'https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.8/LLVM-20.1.8-win64.exe' $installer
+            }
             $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
             if ($hash -ne '3197846a2b19063687dd56e93e34cd941e3548d907f23a6131571321bdf9fe7b') {
                 throw 'The LLVM download failed its SHA-256 check; refusing to run it.'
@@ -162,39 +164,25 @@ function Ensure-LLVM {
 }
 
 function Ensure-Sdk([string]$VsPath) {
-    $sdkRoot = Join-Path $env:LOCALAPPDATA 'FWC10\sdk\rexglue-c94f5eb-v0.3'
-    $patch = Join-Path $PackageRoot 'patches\rexglue-v0.3-local.patch'
-    $submodulePatch = Join-Path $PackageRoot 'patches\rexglue-libmspack-v0.3.patch'
-    if (-not (Test-Path -LiteralPath $patch -PathType Leaf)) { throw 'The v0.3 ReXGlue source patch is missing from the setup package.' }
-    if (-not (Test-Path -LiteralPath $submodulePatch -PathType Leaf)) { throw 'The v0.3 libmspack source patch is missing from the setup package.' }
-    Ensure-Git
+    $sdkRoot = Join-Path $env:LOCALAPPDATA 'FWC10\sdk\rexglue-bundled-v0.3.3'
+    $sdkArchive = Join-Path $PackageRoot 'Installer\sdk-source.zip'
+    if (-not (Test-Path -LiteralPath $sdkArchive -PathType Leaf)) { throw 'The bundled ReXGlue source archive is missing from this setup.' }
     [void][IO.Directory]::CreateDirectory((Split-Path -Parent $sdkRoot))
-    if (-not (Test-Path -LiteralPath $sdkRoot)) {
-        Write-SetupLog 'Downloading the pinned ReXGlue source and submodules.'
-        Invoke-Tool 'git.exe' @('clone','--recurse-submodules','https://github.com/rexglue/rexglue-sdk.git',$sdkRoot) $PackageRoot
-        Invoke-Tool 'git.exe' @('-C',$sdkRoot,'checkout','c94f5ebdcb3c9d1a460ca48e04f9758448f8d518') $PackageRoot
-        Invoke-Tool 'git.exe' @('-C',$sdkRoot,'submodule','update','--init','--recursive') $PackageRoot
+    if (-not (Test-Path -LiteralPath (Join-Path $sdkRoot 'CMakeLists.txt') -PathType Leaf)) {
+        Write-SetupLog 'Extracting the ReXGlue source and required submodules bundled in setup.'
+        [void][IO.Directory]::CreateDirectory($sdkRoot)
+        Expand-Archive -LiteralPath $sdkArchive -DestinationPath $sdkRoot -Force
     } else {
-        $head = (& git.exe -C $sdkRoot rev-parse HEAD 2>$null | Select-Object -First 1)
-        if ($head -ne 'c94f5ebdcb3c9d1a460ca48e04f9758448f8d518') { throw "Existing SDK folder is not the expected pinned checkout: $sdkRoot" }
+        Write-SetupLog 'Reusing the bundled ReXGlue source already extracted on this PC.'
+    }
+    foreach ($module in @('cli11','libmspack','FFmpeg','tomlplusplus','simde','xxHash','spdlog','fmt','utfcpp','imgui','sdl3','tracy')) {
+        $moduleRoot = Join-Path $sdkRoot "thirdparty\$module"
+        if (-not (Test-Path -LiteralPath (Join-Path $moduleRoot '.git') -PathType Leaf)) {
+            throw "A bundled ReXGlue dependency is incomplete: $moduleRoot"
+        }
     }
 
-    $reverseCheck = & git.exe -C $sdkRoot apply --reverse --check --ignore-space-change $patch 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        Invoke-Tool 'git.exe' @('-C',$sdkRoot,'apply','--ignore-space-change',$patch) $PackageRoot
-    } else {
-        Write-SetupLog 'The local v0.3 ReXGlue patch is already applied.'
-    }
-
-    $lib = Join-Path $sdkRoot 'thirdparty\libmspack'
-    $submoduleReverseCheck = & git.exe -C $lib apply --reverse --check --ignore-space-change $submodulePatch 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        Invoke-Tool 'git.exe' @('-C',$lib,'apply','--ignore-space-change',$submodulePatch) $PackageRoot
-    } else {
-        Write-SetupLog 'The local v0.3 libmspack patch is already applied.'
-    }
-
-    Write-SetupLog 'Building the ReXGlue code generator from source.'
+    Write-SetupLog 'Building the bundled ReXGlue code generator from source.'
     Invoke-Tool 'cmake.exe' @('--preset','win-amd64-release') $sdkRoot
     Invoke-Tool 'cmake.exe' @('--build','--preset','win-amd64-release','--target','rexglue','--parallel','2') $sdkRoot
     $codegen = Join-Path $sdkRoot 'out\win-amd64\Release\rexglue.exe'
@@ -222,23 +210,31 @@ try {
     }
     [void][IO.Directory]::CreateDirectory($Destination)
     $gameData = Join-Path $Destination 'GameData'
-    if (Test-Path -LiteralPath $gameData) { throw 'GameData already exists in the selected install folder; choose an empty folder.' }
+    $hasGameData = Test-Path -LiteralPath $gameData -PathType Container
+    if ($hasGameData -and (-not (Test-Path -LiteralPath (Join-Path $gameData 'default.xex') -PathType Leaf) -or
+        -not (Test-Path -LiteralPath (Join-Path $gameData 'fifadllzf.xex') -PathType Leaf))) {
+        throw 'The existing GameData folder is incomplete; choose a clean install folder or reselect the ISO.'
+    }
 
     Write-SetupLog 'Checking and preparing the Windows C++ build tools.'
     $vsPath = Ensure-VisualStudioBuildTools
     Import-VsEnvironment $vsPath
     Ensure-LLVM
 
-    $temporaryGameData = Join-Path $Destination '.GameData-extracting'
-    if (Test-Path -LiteralPath $temporaryGameData) { throw "Temporary extraction folder already exists: $temporaryGameData" }
-    [void][IO.Directory]::CreateDirectory($temporaryGameData)
-    Write-SetupLog 'Extracting the selected ISO locally. The ISO is not uploaded or copied into the release.'
-    Invoke-Tool (Join-Path $PackageRoot 'Installer\tools\extract-xiso.exe') @('-x','-d',$temporaryGameData,$IsoPath) $PackageRoot
-    if (-not (Test-Path -LiteralPath (Join-Path $temporaryGameData 'default.xex')) -or
-        -not (Test-Path -LiteralPath (Join-Path $temporaryGameData 'fifadllzf.xex'))) {
-        throw 'The selected ISO did not extract the expected default.xex and fifadllzf.xex files at its root.'
+    if ($hasGameData) {
+        Write-SetupLog 'Reusing the game files extracted by the previous setup attempt.'
+    } else {
+        $temporaryGameData = Join-Path $Destination '.GameData-extracting'
+        if (Test-Path -LiteralPath $temporaryGameData) { throw "Temporary extraction folder already exists: $temporaryGameData" }
+        [void][IO.Directory]::CreateDirectory($temporaryGameData)
+        Write-SetupLog 'Extracting the selected ISO locally. The ISO is not uploaded or copied into the release.'
+        Invoke-Tool (Join-Path $PackageRoot 'Installer\tools\extract-xiso.exe') @('-x','-d',$temporaryGameData,$IsoPath) $PackageRoot
+        if (-not (Test-Path -LiteralPath (Join-Path $temporaryGameData 'default.xex')) -or
+            -not (Test-Path -LiteralPath (Join-Path $temporaryGameData 'fifadllzf.xex'))) {
+            throw 'The selected ISO did not extract the expected default.xex and fifadllzf.xex files at its root.'
+        }
+        Move-Item -LiteralPath $temporaryGameData -Destination $gameData
     }
-    Move-Item -LiteralPath $temporaryGameData -Destination $gameData
 
     $sdkRoot = Ensure-Sdk $vsPath
     Build-Game $sdkRoot $gameData $Destination

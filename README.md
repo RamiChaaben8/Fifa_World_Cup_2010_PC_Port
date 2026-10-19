@@ -13,12 +13,11 @@ some game paths may stop on missing recompiled functions or other compatibility 
 
 Download and run `FIFA-World-Cup-2010-Setup-v0.3.2.exe` from the GitHub v0.3 release, then select
 your legally obtained Xbox 360 ISO and an empty parent folder. Setup creates `FIFA World Cup 2010`
-inside the folder you choose. The single-file installer unpacks
-its own setup resources and builds the port locally; it does not upload or include your ISO/game data.
-The first run downloads Visual Studio C++ Build Tools, LLVM, portable Git, and the pinned ReXGlue
-source, and may take a while and several gigabytes of disk space. Approve the Microsoft UAC prompt
-if Build Tools are not already installed. When setup completes, run `Settings.exe` in the chosen
-folder.
+inside the folder you choose. The single-file installer embeds LLVM and the pinned ReXGlue source
+and builds the port locally; it does not include your ISO/game data. Visual Studio C++ Build Tools
+are still downloaded from Microsoft if they are not already installed. The first run may take a
+while and several gigabytes of disk space. Approve the Microsoft UAC prompt if Build Tools or a
+protected install location require it. When setup completes, run `Settings.exe` in the chosen folder.
 
 ### Launcher
 

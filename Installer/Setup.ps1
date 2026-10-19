@@ -250,8 +250,13 @@ $installButton.Add_Click({
     $destination = $destinationBox.Text.Trim()
     if ([string]::IsNullOrWhiteSpace($destination)) { return }
     if (Test-Path -LiteralPath $destination -PathType Container) {
-        if (Get-ChildItem -LiteralPath $destination -Force | Select-Object -First 1) {
-            [System.Windows.Forms.MessageBox]::Show($form, 'Choose an empty installation folder. Existing files will not be overwritten.', 'Folder is not empty', 'OK', 'Warning') | Out-Null
+        $existingItems = @(Get-ChildItem -LiteralPath $destination -Force)
+        $existingGameData = Join-Path $destination 'GameData'
+        $canResume = $existingItems.Count -eq 1 -and $existingItems[0].Name -ieq 'GameData' -and
+            (Test-Path -LiteralPath (Join-Path $existingGameData 'default.xex') -PathType Leaf) -and
+            (Test-Path -LiteralPath (Join-Path $existingGameData 'fifadllzf.xex') -PathType Leaf)
+        if ($existingItems.Count -gt 0 -and -not $canResume) {
+            [System.Windows.Forms.MessageBox]::Show($form, 'Choose an empty install folder, or a folder containing only GameData from a previous interrupted setup.', 'Folder is not empty', 'OK', 'Warning') | Out-Null
             return
         }
     }
