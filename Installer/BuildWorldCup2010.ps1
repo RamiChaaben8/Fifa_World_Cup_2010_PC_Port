@@ -52,7 +52,7 @@ $rexGlueSource = if ($env:REXSDK_DIR) { [IO.Path]::GetFullPath($env:REXSDK_DIR) 
 $bundledSdk = Join-Path $installerRoot 'sdk'
 $bundledTools = Join-Path $installerRoot 'compiler'
 $useBundledSdk = !$SourceBuild -and (Test-Path -LiteralPath (Join-Path $bundledSdk 'bin\rexglue.exe'))
-$llvmBin = if (Test-Path -LiteralPath $bundledTools) { Join-Path $bundledTools 'bin' } else { "C:\Program Files\LLVM\bin" }
+$llvmBin = if ($env:FWC10_LLVM_BIN) { [IO.Path]::GetFullPath($env:FWC10_LLVM_BIN) } elseif (Test-Path -LiteralPath $bundledTools) { Join-Path $bundledTools 'bin' } else { "C:\Program Files\LLVM\bin" }
 
 $clang = Join-Path $llvmBin "clang.exe"
 $clangxx = Join-Path $llvmBin "clang++.exe"
@@ -229,11 +229,11 @@ finally {
 
 $buildFolder = Join-Path $workProject "out\build\win-amd64-release"
 
-$exe = Join-Path $buildFolder "worldcup2010.exe"
+$exe = Join-Path $buildFolder "FIFA World Cup 2010.exe"
 $dll = Join-Path $buildFolder "worldcup2010_fifadllzf.dll"
 
 if (!(Test-Path $exe)) {
-    throw "The build finished but worldcup2010.exe was not found."
+    throw "The build finished but FIFA World Cup 2010.exe was not found."
 }
 
 if (!(Test-Path $dll)) {

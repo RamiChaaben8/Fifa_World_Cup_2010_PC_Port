@@ -1,0 +1,136 @@
+// Round 32 - restore the QueryInterface tag chain of sub_8323FB38.
+//
+// Copyright (c) 2026, world-cup-2010-pc-port contributors
+// All rights reserved.
+//
+// BSD 3-Clause License
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//
+// 1. Redistributions of source code must retain the above copyright notice,
+//    this list of conditions and the following disclaimer.
+//
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from this
+//    software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+// POSSIBILITY OF SUCH DAMAGE.
+
+#include <rex/hook.h>
+#include <rex/logging.h>
+#include <rex/ppc.h>
+
+#include <atomic>
+#include <cstdint>
+
+// Round 32 (2026-10-19): QueryInterface of the 288-byte animation class
+// (primary vtable 0x82522820, slot +0x08 = sub_8323FB38).
+//
+// The guest function is one contiguous tag chain at 0x8323FB38..0x8323FBD4:
+//
+//   0x8323FB38  0x3C9F47C4 -> return this
+//   0x8323FB48  r11 = this + 0x24
+//   0x8323FB58  0x88B8764F -> 0x8323FBA0 -> return this + 0x28
+//   0x8323FB68  0x301A1210 -> 0x8323FBB0 -> return this + 0x24
+//   0x8323FB6C  0xBA8B94E2 -> return this
+//   0x8323FB7C  0x42704CE3 -> 0x8323FB8C -> return this + 0x08
+//   0x8323FB88  otherwise  -> 0x8323FBC0
+//   0x8323FBC0  0x6BB23909 -> 0x8323FB8C -> return this + 0x08
+//   0x8323FBD0  default    -> li r3,0; blr  (return null)
+//
+// config/fifadllzf_overrides.toml bounds the recompiled body with
+//
+//   "8323FB38" = { end = 0x8323FB48 }
+//
+// so the generated function stops after `beqlr` and returns `this` for every
+// tag (log 025: QueryInterface(0xA6C60698) returned the 288-byte object, and
+// the caller then read r29+0x664 and (*(r29+0x2C))+0x1C out of bounds, faulting
+// at guest 0x8333916C).  A correct QueryInterface must return null for
+// 0xA6C60698; the caller already null-checks the result (0x83339148..
+// 0x8333914C) and skips the block when it is null.
+//
+// This strong definition overrides the weak alias emitted by
+// DEFINE_REX_FUNC (generated/*/worldcup2010_pch.h): the registry entry
+// (worldcup2010_register.cpp), the PPCFuncMappings entry and the direct call
+// from the -0x28 adjustor thunk sub_8323FBD8 all resolve to this body.
+//
+// Off switch: define REX_R32_DISABLE_QI_CHAIN_OVERRIDE (for example
+// `-DREX_R32_DISABLE_QI_CHAIN_OVERRIDE=1` on the target, or remove this file
+// from CMakeLists.txt) to fall back to the generated, truncated body.
+
+#ifndef REX_R32_DISABLE_QI_CHAIN_OVERRIDE
+
+REX_HOOK_RAW(sub_8323FB38) {
+  (void)base;
+  const uint32_t self = ctx.r3.u32;
+  const uint32_t tag = ctx.r4.u32;
+
+  // 0x8323FB38: if (tag == 0x3C9F47C4) return this;
+  if (tag == 0x3C9F47C4u) {
+    return;
+  }
+
+  // 0x8323FB4C: r11 = this + 0x24 (computed before the tag tests below).
+  const uint32_t plus24 = self + 0x24u;
+
+  // 0x8323FB58 -> 0x8323FBA0 -> 0x8323FBB0.
+  if (tag == 0x88B8764Fu) {
+    const uint32_t adjusted = (plus24 != 0u) ? (plus24 + 4u) : 0u;
+    if (adjusted != 0u) {
+      ctx.r3.u32 = adjusted;  // return this + 0x28
+      return;
+    }
+    // adjusted == 0: the guest continues at 0x8323FB6C (unreachable for a
+    // valid `this`; kept for fidelity).
+  } else if (tag == 0x301A1210u) {
+    // 0x8323FB68 -> 0x8323FBB0.
+    if (plus24 != 0u) {
+      ctx.r3.u32 = plus24;  // return this + 0x24
+      return;
+    }
+    // plus24 == 0: the guest continues at 0x8323FB6C (unreachable for a
+    // valid `this`; kept for fidelity).
+  }
+
+  // 0x8323FB6C: if (tag == 0xBA8B94E2) return this;
+  if (tag == 0xBA8B94E2u) {
+    return;
+  }
+
+  // 0x8323FB7C: if (tag != 0x42704CE3) goto 0x8323FBC0;
+  if (tag != 0x42704CE3u) {
+    // 0x8323FBC0: if (tag == 0x6BB23909) goto 0x8323FB8C;
+    if (tag == 0x6BB23909u) {
+      ctx.r3.u32 = (self != 0u) ? (self + 8u) : 0u;  // return this + 0x08
+      return;
+    }
+
+    // 0x8323FBD0: default -> li r3,0; blr (return null).
+    static std::atomic<bool> s_r32_logged{false};
+    if (tag == 0xA6C60698u && !s_r32_logged.exchange(true, std::memory_order_relaxed)) {
+      REXKRNL_INFO("ROUND32 QI sub_8323FB38: tag=0x{:08X} self=0x{:08X} -> null", tag, self);
+    }
+    ctx.r3.u32 = 0u;
+    return;
+  }
+
+  // 0x8323FB8C: return (this != 0) ? this + 0x08 : 0;
+  ctx.r3.u32 = (self != 0u) ? (self + 8u) : 0u;
+}
+
+#endif  // REX_R32_DISABLE_QI_CHAIN_OVERRIDE

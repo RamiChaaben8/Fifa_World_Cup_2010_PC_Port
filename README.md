@@ -4,10 +4,20 @@ This project contains no game files, game data or generated game code. It requir
 legally obtained copy of the game. It is an unofficial, experimental, incomplete work in
 progress, not affiliated with or endorsed by EA. Game and club names are trademarks of their
 owners. Based on [fifa-street-pc-port](https://github.com/SAMUELITODAVILA/fifa-street-pc-port)
-and the [ReXGlue SDK](https://github.com/RexGlue/ReXGlue). Status: boots and runs about 48 s,
-then stops on missing recompiled functions; no frames rendered yet.
+and the [ReXGlue SDK](https://github.com/RexGlue/ReXGlue). This remains an experimental port;
+some game paths may stop on missing recompiled functions or other compatibility issues.
 
 ## Building
+
+### Installing from your own ISO (Windows x64)
+
+Download and extract `FIFA-World-Cup-2010-Setup-v0.3.0.zip` from the GitHub v0.3 release, then
+run `Setup.exe` and select your legally obtained Xbox 360 ISO and an empty install folder. Setup
+extracts the ISO and builds the port locally; it does not upload or include your ISO/game data.
+The first run downloads Visual Studio C++ Build Tools, LLVM, portable Git, and the pinned ReXGlue
+source, and may take a while and several gigabytes of disk space. Approve the Microsoft UAC prompt
+if Build Tools are not already installed. When setup completes, run `Settings.exe` in the chosen
+folder.
 
 ### Launcher
 
@@ -15,6 +25,8 @@ On Windows, run `Settings.exe` to open the display settings and choose the game 
 `Launcher.ps1` and the `icons/` folder beside it. The launcher does not include the game; select
 your own legally obtained game files when building or running the port. The executable starts the
 settings UI through Windows PowerShell 5.1, which is included with supported Windows installations.
+Builds produce `FIFA World Cup 2010.exe`; game save data is stored under
+`Documents/FIFA World Cup 2010`.
 
 ### Prerequisites
 

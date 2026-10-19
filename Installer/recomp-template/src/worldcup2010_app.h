@@ -26,6 +26,10 @@ class WorldCup2010App : public rex::ReXApp {
   }
 
   void OnConfigurePaths(rex::PathConfig& paths) override {
+    const auto default_user_root = rex::filesystem::GetUserFolder() / "worldcup2010";
+    if (paths.user_data_root == default_user_root) {
+      paths.user_data_root = rex::filesystem::GetUserFolder() / "FIFA World Cup 2010";
+    }
     if (paths.game_data_root.empty()) {
       const auto executable_folder = rex::filesystem::GetExecutableFolder();
       for (const auto& candidate : {executable_folder, executable_folder / "GameData",

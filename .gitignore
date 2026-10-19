@@ -13,6 +13,7 @@ dist/
 *.pdb
 *.obj
 *.lib
+FIFA-World-Cup-2010-Setup-v*.zip
 out/
 build/
 generated/

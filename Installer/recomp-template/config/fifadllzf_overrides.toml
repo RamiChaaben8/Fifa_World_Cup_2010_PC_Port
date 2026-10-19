@@ -346,3 +346,63 @@
 #   the four exit branches target) is itself an already-registered 2-instruction
 #   function (`addi r3,r9,1` / `blr`), so `end` is exclusive at 0x83884CEC.
 "83884CA0" = { end = 0x83884CEC }
+#
+# --- Stage 6f (2026-10-18, Round 24): the next stop after the Stage 6e entry. With
+#   0x83884CA0 compiled the game ran ~48 s and then died on an identical class of gap:
+#       INVALID INDIRECT CALL: target=836A24B0 LR=836BDA64 CTR=836A24B0 r1=7019EE40
+#         r2=00000000 r3=7019EFA0 r11=00000001 r12=836BDC30
+#   0x836A24B0 is a 4-instruction tail fragment in .text (exec, 4-byte aligned):
+#       lwz r11,0x14(r3) / mr r3,r4 / stw r11,0x54(r4) / b 0x8369C858
+#   The `b 0x8369C858` tail-calls a real function prologue (std r30,-16(r1) /
+#   std r31,-8(r1) / lwz r11,8(r3) ...). The previous registered entry 0x836A2490 is
+#   8 instructions (lwz r11,0(r3) / mr r4,r3 / li r5,0 / mr r3,r11 / lwz r10,0(r11) /
+#   lwz r9,12(r10) / mtspr / bctr) and ends exactly at 0x836A24B0; the next registered
+#   entry is 0x836A24C0, so `end` is exclusive there. No direct `bl` targets it and no
+#   32-bit occurrence of the value exists in non-exec data, so it is reachable only
+#   through a function-pointer/vtable slot - same class as Stage 6e.
+"836A24B0" = { end = 0x836A24C0 }
+
+
+# Round 26 (2026-10-18): crash #3 family, approved by the user.
+#   Favourite-team confirmation -> INVALID INDIRECT CALL at target=837FD0F0 LR=83303088
+#   CTR=837FD0F0 r3=B8F21A50 r11=B915E070 r12=83318368 (runs 013 and 014, identical).
+#   0x837FD0F0..0x837FD180 is a run of NINE 4-instruction virtual-method thunks
+#       lwz r12,0(r3) / lwz r11,<slot>(r12) / mtspr CTR,r11 / bctr
+#   (slots r12+0x1C 0x2C 0x3C 0x20 0x30 0x40 0x24 0x08 0x28).  The head of the run,
+#   0x837FD0E0 (slot +0x0C), was already registered; the other nine were not.
+#   Each was validated: exactly 16 bytes, terminator bctr at +0xC, no registered entry
+#   inside the range, previous registered entry 0x837FD0E0 ends exactly at 0x837FD0F0,
+#   0x837FD180 is registered (19-insn leaf, not an override start), no overlap with any
+#   registered extent or with the 281 applied override entries, no lis+ori/addi-phantom
+#   provenance.  Each address is materialised by a real `lis rX,0x8380; addi rY,rX,-N`
+#   pair (e.g. 0x83318354/0x83318360 -> 0x837FD0F0, the callback passed to the container
+#   iterator sub_83302FF8 from 0x83318364).
+"837FD0F0" = { end = 0x837FD100 }
+"837FD100" = { end = 0x837FD110 }
+"837FD110" = { end = 0x837FD120 }
+"837FD120" = { end = 0x837FD130 }
+"837FD130" = { end = 0x837FD140 }
+"837FD140" = { end = 0x837FD150 }
+"837FD150" = { end = 0x837FD160 }
+"837FD160" = { end = 0x837FD170 }
+"837FD170" = { end = 0x837FD180 }
+
+
+# Round 27 (2026-10-18): crash #4, single entry approved by the user.
+#   Boot 015 (after the Round-26 nine-thunk family) -> INVALID INDIRECT CALL
+#   target=8295FB50 LR=829658CC CTR=8295FB50 r3=BB140E40 r11=8295FB50 r12=82969B40.
+#   Call site 0x829658C8 is a 4-level vtable walk: lwz r11,20(r31) / lwz r11,4(r11)
+#   / lwz r11,0(r11) / lwz r11,16(r11) / mtspr CTR,r11 / bcctrl, so the target comes
+#   from a pointer table, not from a lis+ori/addi pair.
+#   0x8295FB50 is a 2-instruction tail fragment:  li r4,1 ; b 0x8295F988  (8 bytes).
+#   Evidence (round27_item1 / item1b / item1c):
+#     * the twin 0x8295FB58 is registered: li r4,0 ; b 0x8295F988, extent
+#       0x8295FB58..0x8295FB60 ending at its own `b`;
+#     * the previous registered entry 0x8295F988 ends exactly at 0x8295FB50 and no
+#       registered entry lies between target and twin;
+#     * the 15-record table 0x823AF8E0..0x823AF958 is {.data ptr, .text code ptr} pairs;
+#       14 of the 15 code pointers are registered starts and the ONLY unregistered one
+#       is 0x8295FB50 (record 4, data ptr 0x83913364);
+#     * no overlap with any registered extent or with the 290 applied override entries;
+#       0x8295FB50 is not already an override start.
+"8295FB50" = { end = 0x8295FB58 }

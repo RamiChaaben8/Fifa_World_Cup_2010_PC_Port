@@ -34,6 +34,7 @@ else()
 endif()
 
 rexglue_setup_target(worldcup2010 GPU_PLUGINS xenos)
+set_target_properties(worldcup2010 PROPERTIES OUTPUT_NAME "FIFA World Cup 2010")
 target_include_directories(worldcup2010 PRIVATE src)
 
 # The source SDK keeps ImGui private to rexruntime; its public UI headers
@@ -62,5 +63,6 @@ if(TARGET worldcup2010_fifadllzf)
     endif()
     target_sources(worldcup2010_fifadllzf PRIVATE
         src/stubs.cpp
+        src/round32_qichain_override.cpp
     )
 endif()

@@ -115,6 +115,9 @@ public static class Fwc10DisplayModes {
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $exeCandidates = @(
+    (Join-Path $scriptRoot 'dist\Output\FIFA World Cup 2010.exe'),
+    (Join-Path $scriptRoot 'FIFA World Cup 2010.exe'),
+    (Join-Path $scriptRoot 'Output\FIFA World Cup 2010.exe'),
     (Join-Path $scriptRoot 'dist\Output\worldcup2010.exe'),
     (Join-Path $scriptRoot 'worldcup2010.exe'),
     (Join-Path $scriptRoot 'Output\worldcup2010.exe')
@@ -268,7 +271,7 @@ $browseButton.ForeColor = [System.Drawing.Color]::White
 $settingsTab.Controls.Add($browseButton)
 $browseButton.Add_Click({
     $dialog = New-Object System.Windows.Forms.OpenFileDialog
-    $dialog.Filter = 'World Cup game (worldcup2010.exe)|worldcup2010.exe|Applications (*.exe)|*.exe'
+    $dialog.Filter = 'World Cup game (FIFA World Cup 2010.exe)|FIFA World Cup 2010.exe|Applications (*.exe)|*.exe'
     $dialog.Title = 'Select the game executable'
     if (Test-Path -LiteralPath $exeBox.Text -PathType Leaf) { $dialog.FileName = $exeBox.Text }
     if ($dialog.ShowDialog($form) -eq [System.Windows.Forms.DialogResult]::OK) { $exeBox.Text = $dialog.FileName }
@@ -473,11 +476,11 @@ $refreshHandler.Invoke()
 $launchButton.Add_Click({
     $exe = $exeBox.Text.Trim()
     if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
-        [System.Windows.Forms.MessageBox]::Show($form, 'Select a valid worldcup2010.exe first.', 'Game not found', 'OK', 'Warning') | Out-Null
+        [System.Windows.Forms.MessageBox]::Show($form, 'Select the game executable first.', 'Game not found', 'OK', 'Warning') | Out-Null
         return
     }
-    if ([IO.Path]::GetFileName($exe) -ine 'worldcup2010.exe') {
-        $answer = [System.Windows.Forms.MessageBox]::Show($form, 'The selected file is not named worldcup2010.exe. Launch it anyway?', 'Confirm executable', 'YesNo', 'Question')
+    if ([IO.Path]::GetFileName($exe) -notin @('FIFA World Cup 2010.exe', 'worldcup2010.exe')) {
+        $answer = [System.Windows.Forms.MessageBox]::Show($form, 'The selected file is not named FIFA World Cup 2010.exe. Launch it anyway?', 'Confirm executable', 'YesNo', 'Question')
         if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }
     }
     $processName = [IO.Path]::GetFileNameWithoutExtension($exe)
@@ -494,6 +497,7 @@ $launchButton.Add_Click({
     $fullscreen = $modeKey -ne 'Windowed'
     $exclusive = $modeKey -eq 'Exclusive'
     $device = [string]$displayCombo.SelectedItem.Device
+    $userDataRoot = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::MyDocuments)) 'FIFA World Cup 2010'
 
     try {
         $settingsDir = Split-Path -Parent $settingsPath
@@ -512,7 +516,8 @@ $launchButton.Add_Click({
             ('--video_mode_refresh_rate={0}' -f $rate),
             ('--fullscreen={0}' -f $fullscreen.ToString().ToLowerInvariant()),
             ('--true_vsync={0}' -f $exclusive.ToString().ToLowerInvariant()),
-            ('--launcher_monitor_device={0}' -f $device)
+            ('--launcher_monitor_device={0}' -f $device),
+            ('--user_data_root="{0}"' -f $userDataRoot)
         )
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $exe
