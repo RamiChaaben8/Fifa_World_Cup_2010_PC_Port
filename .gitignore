@@ -8,6 +8,7 @@ dist/
 
 # Build output / binaries
 *.exe
+!Settings.exe
 *.dll
 *.pdb
 *.obj

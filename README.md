@@ -9,6 +9,13 @@ then stops on missing recompiled functions; no frames rendered yet.
 
 ## Building
 
+### Launcher
+
+On Windows, run `Settings.exe` to open the display settings and choose the game executable. Keep
+`Launcher.ps1` and the `icons/` folder beside it. The launcher does not include the game; select
+your own legally obtained game files when building or running the port. The executable starts the
+settings UI through Windows PowerShell 5.1, which is included with supported Windows installations.
+
 ### Prerequisites
 
 - **Your own ISO** of *2010 FIFA World Cup South Africa* (Xbox 360, any region), extracted
