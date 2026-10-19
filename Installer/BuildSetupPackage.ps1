@@ -1,10 +1,13 @@
 [CmdletBinding()]
 param(
-    [string]$Output = (Join-Path (Split-Path -Parent $PSScriptRoot) 'FIFA-World-Cup-2010-Setup-v0.3.zip')
+    [string]$Output
 )
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
+if ([string]::IsNullOrWhiteSpace($Output)) {
+    $Output = Join-Path $repoRoot 'FIFA-World-Cup-2010-Setup-v0.3.0.exe'
+}
 $compiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 if (-not (Test-Path -LiteralPath $compiler -PathType Leaf)) { throw "C# compiler not found: $compiler" }
 
@@ -36,16 +39,6 @@ foreach ($relative in $required) {
 $stage = Join-Path $env:TEMP ('fwc10-setup-v03-' + [guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($stage)
 try {
-    $compilerArguments = @(
-        '/nologo', '/target:winexe', '/optimize+',
-        ('/win32icon:' + (Join-Path $repoRoot 'icons\game_logo.ico')),
-        ('/out:' + (Join-Path $stage 'Setup.exe')),
-        '/reference:System.dll', '/reference:System.Windows.Forms.dll',
-        (Join-Path $PSScriptRoot 'SetupExe.cs')
-    )
-    & $compiler @compilerArguments
-    if ($LASTEXITCODE -ne 0) { throw "Setup.exe compilation failed with code $LASTEXITCODE." }
-
     $copyPaths = @(
         'Installer', 'patches\rexglue-v0.3-local.patch', 'patches\rexglue-libmspack-v0.3.patch', 'Launcher.ps1',
         'Settings.exe', 'icons', 'README.md', 'LICENSE'
@@ -61,10 +54,25 @@ try {
         }
     }
 
+    $payload = Join-Path $stage 'payload.zip'
+    Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $payload -CompressionLevel Optimal
+    $setupExe = Join-Path $stage 'FIFA-World-Cup-2010-Setup.exe'
+    $compilerArguments = @(
+        '/nologo', '/target:winexe', '/optimize+',
+        ('/win32icon:' + (Join-Path $repoRoot 'icons\game_logo.ico')),
+        ('/out:' + $setupExe),
+        '/reference:System.dll', '/reference:System.Windows.Forms.dll',
+        '/reference:System.IO.Compression.dll',
+        ('/resource:' + $payload + ',FWC10.Payload.zip'),
+        (Join-Path $PSScriptRoot 'SetupExe.cs')
+    )
+    & $compiler @compilerArguments
+    if ($LASTEXITCODE -ne 0) { throw "Setup.exe compilation failed with code $LASTEXITCODE." }
+
     $Output = [IO.Path]::GetFullPath($Output)
     [void][IO.Directory]::CreateDirectory((Split-Path -Parent $Output))
     if (Test-Path -LiteralPath $Output) { throw "Output already exists; move it or choose a new path: $Output" }
-    Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $Output -CompressionLevel Optimal
+    Copy-Item -LiteralPath $setupExe -Destination $Output
     Get-Item -LiteralPath $Output | Select-Object FullName, Length
 } finally {
     Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
