@@ -138,9 +138,22 @@ $destinationBrowse.ForeColor = [System.Drawing.Color]::White
 $page.Controls.Add($destinationBrowse)
 $destinationBrowse.Add_Click({
     $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-    $dialog.Description = 'Choose an empty folder for the game installation'
-    $dialog.SelectedPath = $destinationBox.Text
-    if ($dialog.ShowDialog($form) -eq [System.Windows.Forms.DialogResult]::OK) { $destinationBox.Text = $dialog.SelectedPath }
+    $dialog.Description = 'Choose the parent folder. Setup will create FIFA World Cup 2010 inside it.'
+    $currentDestination = $destinationBox.Text.TrimEnd('\')
+    if ([IO.Path]::GetFileName($currentDestination) -ieq 'FIFA World Cup 2010') {
+        $dialog.SelectedPath = Split-Path -Parent $currentDestination
+    } else {
+        $dialog.SelectedPath = $currentDestination
+    }
+    if ($dialog.ShowDialog($form) -eq [System.Windows.Forms.DialogResult]::OK) {
+        $selectedFolder = [IO.Path]::GetFullPath($dialog.SelectedPath)
+        $selectedFolderName = [IO.Path]::GetFileName($selectedFolder.TrimEnd('\'))
+        if ($selectedFolderName -ieq 'FIFA World Cup 2010') {
+            $destinationBox.Text = $selectedFolder.TrimEnd('\')
+        } else {
+            $destinationBox.Text = Join-Path $selectedFolder 'FIFA World Cup 2010'
+        }
+    }
 })
 
 $notice = New-Object System.Windows.Forms.Label

@@ -123,21 +123,41 @@ function Ensure-Git {
 
 function Ensure-LLVM {
     $llvmRoot = Join-Path $env:LOCALAPPDATA 'FWC10\tools\LLVM-20.1.8'
-    $clang = Join-Path $llvmRoot 'bin\clang.exe'
+    $llvmBin = Join-Path $llvmRoot 'bin'
+    $clang = Join-Path $llvmBin 'clang.exe'
+    $fallbackBins = @(
+        (Join-Path $env:ProgramFiles 'LLVM\bin'),
+        (Join-Path ${env:ProgramFiles(x86)} 'LLVM\bin'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\LLVM\bin')
+    )
     if (-not (Test-Path -LiteralPath $clang -PathType Leaf)) {
-        Write-SetupLog 'Downloading the pinned LLVM 20.1.8 compiler (about 386 MB).'
-        $installer = Join-Path $env:LOCALAPPDATA 'FWC10\downloads\LLVM-20.1.8-win64.exe'
-        Download-File 'https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.8/LLVM-20.1.8-win64.exe' $installer
-        $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($hash -ne '3197846a2b19063687dd56e93e34cd941e3548d907f23a6131571321bdf9fe7b') {
-            throw 'The LLVM download failed its SHA-256 check; refusing to run it.'
+        $fallback = $fallbackBins | Where-Object { Test-Path -LiteralPath (Join-Path $_ 'clang.exe') -PathType Leaf } | Select-Object -First 1
+        if ($fallback) {
+            $llvmBin = $fallback
+        } else {
+            Write-SetupLog 'Downloading the pinned LLVM 20.1.8 compiler (about 386 MB).'
+            $installer = Join-Path $env:LOCALAPPDATA 'FWC10\downloads\LLVM-20.1.8-win64.exe'
+            Download-File 'https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.8/LLVM-20.1.8-win64.exe' $installer
+            $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($hash -ne '3197846a2b19063687dd56e93e34cd941e3548d907f23a6131571321bdf9fe7b') {
+                throw 'The LLVM download failed its SHA-256 check; refusing to run it.'
+            }
+            Write-SetupLog 'Installing LLVM for the current user.'
+            [void][IO.Directory]::CreateDirectory((Split-Path -Parent $llvmRoot))
+            # NSIS requires /D= to be the final, unquoted command-line argument.
+            $process = Start-Process -FilePath $installer -ArgumentList @('/S',("/D={0}" -f $llvmRoot)) -Wait -PassThru
+            if ($process.ExitCode -ne 0) { throw "LLVM installation failed with code $($process.ExitCode)." }
+            if (-not (Test-Path -LiteralPath $clang -PathType Leaf)) {
+                $fallback = $fallbackBins | Where-Object { Test-Path -LiteralPath (Join-Path $_ 'clang.exe') -PathType Leaf } | Select-Object -First 1
+                if ($fallback) { $llvmBin = $fallback }
+            }
         }
-        Write-SetupLog 'Installing LLVM for the current user.'
-        $process = Start-Process -FilePath $installer -ArgumentList ('/S /D="{0}"' -f $llvmRoot) -Wait -PassThru
-        if ($process.ExitCode -ne 0) { throw "LLVM installation failed with code $($process.ExitCode)." }
+        if ($llvmBin -ne (Join-Path $llvmRoot 'bin')) { Write-SetupLog "Using the LLVM compiler found at $llvmBin" }
     }
-    if (-not (Test-Path -LiteralPath $clang -PathType Leaf)) { throw 'LLVM installation did not create clang.exe.' }
-    $env:FWC10_LLVM_BIN = Join-Path $llvmRoot 'bin'
+    if (-not (Test-Path -LiteralPath (Join-Path $llvmBin 'clang.exe') -PathType Leaf)) {
+        throw "LLVM setup finished but clang.exe was not found. Checked '$llvmBin' and the standard LLVM install locations. If this persists, install LLVM 20.1.8 and rerun setup."
+    }
+    $env:FWC10_LLVM_BIN = $llvmBin
     $env:PATH = "$env:FWC10_LLVM_BIN;$env:PATH"
 }
 
