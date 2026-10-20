@@ -16,36 +16,19 @@ function Write-SetupLog([string]$Message) {
 
 function Invoke-Tool([string]$File, [string[]]$Arguments, [string]$WorkingDirectory = $PackageRoot) {
     $quoted = foreach ($arg in $Arguments) { '"' + ([string]$arg).Replace('"', '\"') + '"' }
-    Write-SetupLog ('Running: {0} {1}' -f $File, ($quoted -join ' '))
+    $commandLine = ('"{0}" {1}' -f $File, ($quoted -join ' '))
+    Write-SetupLog ('Running: {0}' -f $commandLine)
+    # Let cmd.exe append the tool's output straight to the live setup log. Reading
+    # redirected pipes asynchronously from PowerShell script-block handlers is not
+    # reliable outside the runspace, and this keeps long builds visibly progressing.
     $start = New-Object System.Diagnostics.ProcessStartInfo
-    $start.FileName = $File
-    $start.Arguments = $quoted -join ' '
+    $start.FileName = $env:ComSpec
+    $start.Arguments = '/d /s /c "' + $commandLine + ' >> "' + $LogPath + '" 2>&1"'
     $start.WorkingDirectory = $WorkingDirectory
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
-    $start.RedirectStandardOutput = $true
-    $start.RedirectStandardError = $true
-    $process = New-Object System.Diagnostics.Process
-    $process.StartInfo = $start
-    $logLock = New-Object object
-    $writer = [IO.StreamWriter]::new($LogPath, $true, [Text.UTF8Encoding]::new($false))
-    $writer.AutoFlush = $true
-    $outputHandler = [Diagnostics.DataReceivedEventHandler]{
-        param($sender, $eventArgs)
-        if ($null -ne $eventArgs.Data) {
-            [Threading.Monitor]::Enter($logLock)
-            try { $writer.WriteLine('[{0}] {1}' -f (Get-Date -Format 'HH:mm:ss'), $eventArgs.Data) }
-            finally { [Threading.Monitor]::Exit($logLock) }
-        }
-    }.GetNewClosure()
-    $process.add_OutputDataReceived($outputHandler)
-    $process.add_ErrorDataReceived($outputHandler)
-    [void]$process.Start()
-    $process.BeginOutputReadLine()
-    $process.BeginErrorReadLine()
+    $process = [System.Diagnostics.Process]::Start($start)
     $process.WaitForExit()
-    $process.WaitForExit()
-    $writer.Dispose()
     if ($process.ExitCode -ne 0) { throw "Tool failed with exit code $($process.ExitCode): $File" }
 }
 
