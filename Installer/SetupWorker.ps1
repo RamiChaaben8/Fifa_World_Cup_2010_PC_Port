@@ -205,8 +205,11 @@ function Build-Game([string]$SdkRoot, [string]$GameData, [string]$Output) {
     $env:FWC10_BUILD_ROOT = Join-Path $env:LOCALAPPDATA 'FWC10\build'
     $jobs = [Math]::Min(4, [Math]::Max(1, [Environment]::ProcessorCount - 1))
     Write-SetupLog 'Compiling the game from the selected ISO data. This can take 10-30 minutes.'
-    & (Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe') -NoProfile -ExecutionPolicy Bypass -File $buildScript -GameData $GameData -Output $Output -SourceBuild -Jobs $jobs *>> $LogPath
-    if ($LASTEXITCODE -ne 0) { throw "Game compilation failed with exit code $LASTEXITCODE. See $LogPath" }
+    # Append through cmd.exe so compiler output stays in the same encoding as the
+    # rest of the log and appears while the build is running.
+    Invoke-Tool (Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe') @(
+        '-NoProfile','-ExecutionPolicy','Bypass','-File',$buildScript,
+        '-GameData',$GameData,'-Output',$Output,'-SourceBuild','-Jobs',"$jobs") $PackageRoot
     $exe = Join-Path $Output 'FIFA World Cup 2010.exe'
     if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw 'The build did not produce FIFA World Cup 2010.exe.' }
 }
