@@ -6,7 +6,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($Output)) {
-    $Output = Join-Path $repoRoot 'FIFA-World-Cup-2010-Setup-v0.3.4.exe'
+    $Output = Join-Path $repoRoot 'FIFA-World-Cup-2010-Setup-v0.3.6.exe'
 }
 $compiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 if (-not (Test-Path -LiteralPath $compiler -PathType Leaf)) { throw "C# compiler not found: $compiler" }
@@ -88,6 +88,17 @@ try {
     $sdkArchive = Join-Path $stage 'Installer\sdk-source.zip'
     Compress-Archive -Path (Join-Path $sdkBundle '*') -DestinationPath $sdkArchive -CompressionLevel Optimal
     Remove-Item -LiteralPath $sdkBundle -Recurse -Force
+
+    $codegenSource = Join-Path $sdkSource 'out\win-amd64\Release'
+    $codegenExe = Join-Path $codegenSource 'rexglue.exe'
+    $codegenRuntime = Join-Path $codegenSource 'rexruntime.dll'
+    if (-not (Test-Path -LiteralPath $codegenExe -PathType Leaf) -or -not (Test-Path -LiteralPath $codegenRuntime -PathType Leaf)) {
+        throw "The pinned ReXGlue code generator has not been built: $codegenSource"
+    }
+    $codegenTarget = Join-Path $stage 'Installer\tools\codegen'
+    [void][IO.Directory]::CreateDirectory($codegenTarget)
+    Copy-Item -LiteralPath $codegenExe -Destination $codegenTarget -Force
+    Copy-Item -LiteralPath $codegenRuntime -Destination $codegenTarget -Force
 
     $llvmInstaller = Join-Path $env:LOCALAPPDATA 'FWC10\downloads\LLVM-20.1.8-win64.exe'
     if (-not (Test-Path -LiteralPath $llvmInstaller -PathType Leaf)) {

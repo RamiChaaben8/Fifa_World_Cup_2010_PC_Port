@@ -252,11 +252,12 @@ $installButton.Add_Click({
     if (Test-Path -LiteralPath $destination -PathType Container) {
         $existingItems = @(Get-ChildItem -LiteralPath $destination -Force)
         $existingGameData = Join-Path $destination 'GameData'
-        $canResume = $existingItems.Count -eq 1 -and $existingItems[0].Name -ieq 'GameData' -and
-            (Test-Path -LiteralPath (Join-Path $existingGameData 'default.xex') -PathType Leaf) -and
-            (Test-Path -LiteralPath (Join-Path $existingGameData 'fifadllzf.xex') -PathType Leaf)
-        if ($existingItems.Count -gt 0 -and -not $canResume) {
-            [System.Windows.Forms.MessageBox]::Show($form, 'Choose an empty install folder, or a folder containing only GameData from a previous interrupted setup.', 'Folder is not empty', 'OK', 'Warning') | Out-Null
+        $unexpectedItems = @($existingItems | Where-Object { $_.Name -ine 'GameData' -and $_.Name -ine '.GameData-extracting' })
+        $gameDataIsValid = -not (Test-Path -LiteralPath $existingGameData -PathType Container) -or
+            ((Test-Path -LiteralPath (Join-Path $existingGameData 'default.xex') -PathType Leaf) -and
+             (Test-Path -LiteralPath (Join-Path $existingGameData 'fifadllzf.xex') -PathType Leaf))
+        if ($existingItems.Count -gt 0 -and ($unexpectedItems.Count -gt 0 -or -not $gameDataIsValid)) {
+            [System.Windows.Forms.MessageBox]::Show($form, 'Choose an empty install folder, or a folder left by a previous interrupted setup (GameData or .GameData-extracting).', 'Folder is not empty', 'OK', 'Warning') | Out-Null
             return
         }
     }

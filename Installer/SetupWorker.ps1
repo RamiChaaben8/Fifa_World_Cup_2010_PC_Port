@@ -11,7 +11,16 @@ $ErrorActionPreference = 'Stop'
 
 function Write-SetupLog([string]$Message) {
     $line = '[{0}] {1}' -f (Get-Date -Format 'HH:mm:ss'), $Message
-    Add-Content -LiteralPath $LogPath -Value $line -Encoding UTF8
+    # cmd.exe holds the log open while a tool streams into it, and antivirus can
+    # briefly lock it too. A failed write must never abort the installation.
+    for ($attempt = 0; $attempt -lt 8; $attempt++) {
+        try {
+            Add-Content -LiteralPath $LogPath -Value $line -Encoding UTF8 -ErrorAction Stop
+            return
+        } catch {
+            Start-Sleep -Milliseconds 250
+        }
+    }
 }
 
 function Invoke-Tool([string]$File, [string[]]$Arguments, [string]$WorkingDirectory = $PackageRoot) {
@@ -27,8 +36,12 @@ function Invoke-Tool([string]$File, [string[]]$Arguments, [string]$WorkingDirect
     $start.WorkingDirectory = $WorkingDirectory
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
+    $watch = [Diagnostics.Stopwatch]::StartNew()
     $process = [System.Diagnostics.Process]::Start($start)
+    # Do not write to the log while cmd.exe is streaming into it; the tool output
+    # itself is the progress indicator and a second writer would conflict.
     $process.WaitForExit()
+    Write-SetupLog ('  Finished {0} in {1:N0} min with exit code {2}.' -f [IO.Path]::GetFileName($File), $watch.Elapsed.TotalMinutes, $process.ExitCode)
     if ($process.ExitCode -ne 0) { throw "Tool failed with exit code $($process.ExitCode): $File" }
 }
 
@@ -188,12 +201,24 @@ function Ensure-Sdk([string]$VsPath) {
         }
     }
 
-    Write-SetupLog 'Building the bundled ReXGlue code generator from source. This can take 10-20 minutes.'
-    $watch = [Diagnostics.Stopwatch]::StartNew()
-    Invoke-Tool 'cmake.exe' @('--preset','win-amd64','-DREXGLUE_BUILD_TESTS=OFF','-DREXGLUE_USE_VULKAN=OFF') $sdkRoot
-    Invoke-Tool 'cmake.exe' @('--build','--preset','win-amd64-release','--target','rexglue','--parallel','4') $sdkRoot
-    Write-SetupLog ('ReXGlue code generator built in {0:N0} minutes.' -f $watch.Elapsed.TotalMinutes)
     $codegen = Join-Path $sdkRoot 'out\win-amd64\Release\rexglue.exe'
+    $bundledCodegen = Join-Path $PackageRoot 'Installer\tools\codegen\rexglue.exe'
+    if (Test-Path -LiteralPath $bundledCodegen -PathType Leaf) {
+        Write-SetupLog 'Using the pinned ReXGlue code generator bundled in setup.'
+        $codegenFolder = Split-Path -Parent $codegen
+        [void][IO.Directory]::CreateDirectory($codegenFolder)
+        Copy-Item -LiteralPath $bundledCodegen -Destination $codegen -Force
+        $bundledRuntime = Join-Path (Split-Path -Parent $bundledCodegen) 'rexruntime.dll'
+        if (Test-Path -LiteralPath $bundledRuntime -PathType Leaf) {
+            Copy-Item -LiteralPath $bundledRuntime -Destination $codegenFolder -Force
+        }
+    } else {
+        Write-SetupLog 'Building the bundled ReXGlue code generator from source. This can take 10-20 minutes.'
+        $watch = [Diagnostics.Stopwatch]::StartNew()
+        Invoke-Tool 'cmake.exe' @('--preset','win-amd64','-DREXGLUE_BUILD_TESTS=OFF','-DREXGLUE_USE_VULKAN=OFF') $sdkRoot
+        Invoke-Tool 'cmake.exe' @('--build','--preset','win-amd64-release','--target','rexglue','--parallel','4') $sdkRoot
+        Write-SetupLog ('ReXGlue code generator built in {0:N0} minutes.' -f $watch.Elapsed.TotalMinutes)
+    }
     if (-not (Test-Path -LiteralPath $codegen -PathType Leaf)) { throw "ReXGlue code generator build output not found: $codegen" }
     return $sdkRoot
 }
@@ -203,7 +228,7 @@ function Build-Game([string]$SdkRoot, [string]$GameData, [string]$Output) {
     if (-not (Test-Path -LiteralPath $buildScript -PathType Leaf)) { throw 'BuildWorldCup2010.ps1 is missing from the setup package.' }
     $env:REXSDK_DIR = $SdkRoot
     $env:FWC10_BUILD_ROOT = Join-Path $env:LOCALAPPDATA 'FWC10\build'
-    $jobs = [Math]::Min(4, [Math]::Max(1, [Environment]::ProcessorCount - 1))
+    $jobs = [Math]::Min(8, [Math]::Max(1, [Environment]::ProcessorCount - 1))
     Write-SetupLog 'Compiling the game from the selected ISO data. This can take 10-30 minutes.'
     # Append through cmd.exe so compiler output stays in the same encoding as the
     # rest of the log and appears while the build is running.
@@ -236,13 +261,22 @@ try {
         Write-SetupLog 'Reusing the game files extracted by the previous setup attempt.'
     } else {
         $temporaryGameData = Join-Path $Destination '.GameData-extracting'
-        if (Test-Path -LiteralPath $temporaryGameData) { throw "Temporary extraction folder already exists: $temporaryGameData" }
-        [void][IO.Directory]::CreateDirectory($temporaryGameData)
-        Write-SetupLog 'Extracting the selected ISO locally. The ISO is not uploaded or copied into the release.'
-        Invoke-Tool (Join-Path $PackageRoot 'Installer\tools\extract-xiso.exe') @('-x','-d',$temporaryGameData,$IsoPath) $PackageRoot
-        if (-not (Test-Path -LiteralPath (Join-Path $temporaryGameData 'default.xex')) -or
-            -not (Test-Path -LiteralPath (Join-Path $temporaryGameData 'fifadllzf.xex'))) {
-            throw 'The selected ISO did not extract the expected default.xex and fifadllzf.xex files at its root.'
+        $completedExtraction = (Test-Path -LiteralPath (Join-Path $temporaryGameData 'default.xex') -PathType Leaf) -and
+            (Test-Path -LiteralPath (Join-Path $temporaryGameData 'fifadllzf.xex') -PathType Leaf)
+        if ((Test-Path -LiteralPath $temporaryGameData) -and -not $completedExtraction) {
+            Write-SetupLog 'Discarding an incomplete ISO extraction left by the previous setup attempt.'
+            Remove-Item -LiteralPath $temporaryGameData -Recurse -Force
+        }
+        if ($completedExtraction) {
+            Write-SetupLog 'Reusing the ISO extraction the previous setup attempt already completed.'
+        } else {
+            [void][IO.Directory]::CreateDirectory($temporaryGameData)
+            Write-SetupLog 'Extracting the selected ISO locally. Reading the whole ISO can take several minutes. The ISO is not uploaded or copied into the release.'
+            Invoke-Tool (Join-Path $PackageRoot 'Installer\tools\extract-xiso.exe') @('-x','-d',$temporaryGameData,$IsoPath) $PackageRoot
+            if (-not (Test-Path -LiteralPath (Join-Path $temporaryGameData 'default.xex')) -or
+                -not (Test-Path -LiteralPath (Join-Path $temporaryGameData 'fifadllzf.xex'))) {
+                throw 'The selected ISO did not extract the expected default.xex and fifadllzf.xex files at its root.'
+            }
         }
         Move-Item -LiteralPath $temporaryGameData -Destination $gameData
     }
@@ -256,6 +290,18 @@ try {
         Copy-Item -LiteralPath $source -Destination $Destination -Force
     }
     Copy-Item -LiteralPath (Join-Path $PackageRoot 'icons') -Destination $Destination -Recurse -Force
+
+    # The game writes its log/config next to the executable. When setup installs
+    # under a protected folder it runs elevated, but the game does not, so give
+    # the current user write access to the install folder (and anything new the
+    # game creates there) instead of requiring the game to be run as admin.
+    try {
+        $userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        Invoke-Tool 'icacls.exe' @($Destination, '/grant', "*${userSid}:(OI)(CI)M", '/Q') $PackageRoot
+    } catch {
+        Write-SetupLog ('WARNING: could not grant this user write access to the install folder: ' + $_.Exception.Message)
+    }
+
     Write-SetupLog "Installation complete: $Destination"
     exit 0
 } catch {
