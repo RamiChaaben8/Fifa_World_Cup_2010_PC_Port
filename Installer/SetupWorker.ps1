@@ -128,33 +128,34 @@ function Ensure-LLVM {
         (Join-Path $env:LOCALAPPDATA 'Programs\LLVM\bin')
     )
     if (-not (Test-Path -LiteralPath $clang -PathType Leaf)) {
-        $fallback = $fallbackBins | Where-Object { Test-Path -LiteralPath (Join-Path $_ 'clang.exe') -PathType Leaf } | Select-Object -First 1
-        if ($fallback) {
-            $llvmBin = $fallback
-        } else {
-            $installer = Join-Path $PackageRoot 'Installer\tools\LLVM-20.1.8-win64.exe'
-            if (Test-Path -LiteralPath $installer -PathType Leaf) {
-                Write-SetupLog 'Using the LLVM 20.1.8 installer embedded in setup.'
-            } else {
-                Write-SetupLog 'Downloading the pinned LLVM 20.1.8 compiler (about 386 MB).'
-                $installer = Join-Path $env:LOCALAPPDATA 'FWC10\downloads\LLVM-20.1.8-win64.exe'
-                Download-File 'https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.8/LLVM-20.1.8-win64.exe' $installer
-            }
-            $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
-            if ($hash -ne '3197846a2b19063687dd56e93e34cd941e3548d907f23a6131571321bdf9fe7b') {
-                throw 'The LLVM download failed its SHA-256 check; refusing to run it.'
-            }
-            Write-SetupLog 'Installing LLVM for the current user.'
-            [void][IO.Directory]::CreateDirectory((Split-Path -Parent $llvmRoot))
-            # NSIS requires /D= to be the final, unquoted command-line argument.
-            $process = Start-Process -FilePath $installer -ArgumentList @('/S',("/D={0}" -f $llvmRoot)) -Wait -PassThru
-            if ($process.ExitCode -ne 0) { throw "LLVM installation failed with code $($process.ExitCode)." }
-            if (-not (Test-Path -LiteralPath $clang -PathType Leaf)) {
-                $fallback = $fallbackBins | Where-Object { Test-Path -LiteralPath (Join-Path $_ 'clang.exe') -PathType Leaf } | Select-Object -First 1
-                if ($fallback) { $llvmBin = $fallback }
+        $installer = Join-Path $PackageRoot 'Installer\tools\LLVM-20.1.8-win64.exe'
+        if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
+            Write-SetupLog 'Downloading the pinned LLVM 20.1.8 compiler (about 386 MB).'
+            $installer = Join-Path $env:LOCALAPPDATA 'FWC10\downloads\LLVM-20.1.8-win64.exe'
+            Download-File 'https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.8/LLVM-20.1.8-win64.exe' $installer
+        }
+        $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($hash -ne '3197846a2b19063687dd56e93e34cd941e3548d907f23a6131571321bdf9fe7b') {
+            throw 'The LLVM 20.1.8 package failed its SHA-256 check; refusing to run it.'
+        }
+        Write-SetupLog 'Installing the pinned LLVM 20.1.8 compiler for the current user.'
+        [void][IO.Directory]::CreateDirectory((Split-Path -Parent $llvmRoot))
+        # NSIS requires /D= to be the final command-line argument and takes the rest
+        # of the line literally, so it must not be quoted even when the path has spaces.
+        $start = New-Object System.Diagnostics.ProcessStartInfo
+        $start.FileName = $installer
+        $start.Arguments = '/S /D=' + $llvmRoot
+        $start.UseShellExecute = $false
+        $process = [System.Diagnostics.Process]::Start($start)
+        $process.WaitForExit()
+        if ($process.ExitCode -ne 0) { Write-SetupLog "The LLVM installer exited with code $($process.ExitCode)." }
+        if (-not (Test-Path -LiteralPath $clang -PathType Leaf)) {
+            $fallback = $fallbackBins | Where-Object { Test-Path -LiteralPath (Join-Path $_ 'clang.exe') -PathType Leaf } | Select-Object -First 1
+            if ($fallback) {
+                $llvmBin = $fallback
+                Write-SetupLog "The pinned LLVM install did not finish; using the LLVM compiler found at $llvmBin"
             }
         }
-        if ($llvmBin -ne (Join-Path $llvmRoot 'bin')) { Write-SetupLog "Using the LLVM compiler found at $llvmBin" }
     }
     if (-not (Test-Path -LiteralPath (Join-Path $llvmBin 'clang.exe') -PathType Leaf)) {
         throw "LLVM setup finished but clang.exe was not found. Checked '$llvmBin' and the standard LLVM install locations. If this persists, install LLVM 20.1.8 and rerun setup."
@@ -169,9 +170,16 @@ function Ensure-Sdk([string]$VsPath) {
     if (-not (Test-Path -LiteralPath $sdkArchive -PathType Leaf)) { throw 'The bundled ReXGlue source archive is missing from this setup.' }
     [void][IO.Directory]::CreateDirectory((Split-Path -Parent $sdkRoot))
     if (-not (Test-Path -LiteralPath (Join-Path $sdkRoot 'CMakeLists.txt') -PathType Leaf)) {
-        Write-SetupLog 'Extracting the ReXGlue source and required submodules bundled in setup.'
-        [void][IO.Directory]::CreateDirectory($sdkRoot)
-        Expand-Archive -LiteralPath $sdkArchive -DestinationPath $sdkRoot -Force
+        Write-SetupLog 'Extracting the ReXGlue source and required dependencies bundled in setup (about 400 MB).'
+        Add-Type -AssemblyName System.IO.Compression
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        if (Test-Path -LiteralPath $sdkRoot) { Remove-Item -LiteralPath $sdkRoot -Recurse -Force }
+        $staging = $sdkRoot + '.extracting'
+        if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
+        $watch = [Diagnostics.Stopwatch]::StartNew()
+        [IO.Compression.ZipFile]::ExtractToDirectory($sdkArchive, $staging)
+        Move-Item -LiteralPath $staging -Destination $sdkRoot
+        Write-SetupLog ('Extracted the bundled ReXGlue source in {0:N0} seconds.' -f $watch.Elapsed.TotalSeconds)
     } else {
         Write-SetupLog 'Reusing the bundled ReXGlue source already extracted on this PC.'
     }
@@ -182,9 +190,11 @@ function Ensure-Sdk([string]$VsPath) {
         }
     }
 
-    Write-SetupLog 'Building the bundled ReXGlue code generator from source.'
-    Invoke-Tool 'cmake.exe' @('--preset','win-amd64-release') $sdkRoot
-    Invoke-Tool 'cmake.exe' @('--build','--preset','win-amd64-release','--target','rexglue','--parallel','2') $sdkRoot
+    Write-SetupLog 'Building the bundled ReXGlue code generator from source. This can take 10-20 minutes.'
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    Invoke-Tool 'cmake.exe' @('--preset','win-amd64','-DREXGLUE_BUILD_TESTS=OFF','-DREXGLUE_USE_VULKAN=OFF') $sdkRoot
+    Invoke-Tool 'cmake.exe' @('--build','--preset','win-amd64-release','--target','rexglue','--parallel','4') $sdkRoot
+    Write-SetupLog ('ReXGlue code generator built in {0:N0} minutes.' -f $watch.Elapsed.TotalMinutes)
     $codegen = Join-Path $sdkRoot 'out\win-amd64\Release\rexglue.exe'
     if (-not (Test-Path -LiteralPath $codegen -PathType Leaf)) { throw "ReXGlue code generator build output not found: $codegen" }
     return $sdkRoot

@@ -11,7 +11,7 @@ some game paths may stop on missing recompiled functions or other compatibility 
 
 ### Installing from your own ISO (Windows x64)
 
-Download and run `FIFA-World-Cup-2010-Setup-v0.3.2.exe` from the GitHub v0.3 release, then select
+Download and run `FIFA-World-Cup-2010-Setup-v0.3.3.exe` from the GitHub v0.3 release, then select
 your legally obtained Xbox 360 ISO and an empty parent folder. Setup creates `FIFA World Cup 2010`
 inside the folder you choose. The single-file installer embeds LLVM and the pinned ReXGlue source
 and builds the port locally; it does not include your ISO/game data. Visual Studio C++ Build Tools
@@ -36,16 +36,16 @@ Builds produce `FIFA World Cup 2010.exe`; game save data is stored under
 - **ReXGlue SDK** — clone at the pinned commit and apply the patches in `patches/`:
 
   ```powershell
-  git clone https://github.com/RexGlue/ReXGlue.git
-  cd ReXGlue
+  git clone https://github.com/rexglue/rexglue-sdk.git
+  cd rexglue-sdk
   git checkout c94f5ebdcb3c9d1a460ca48e04f9758448f8d518
-  git apply ..\patches\rexglue-local-changes.patch
-  git apply ..\patches\round22_xmemory_guest_virtual_commit.patch
+  git apply ..\patches\rexglue-v0.3-local.patch
   ```
 
 - **Fix the 14 libmspack symlink stubs on Windows** — ReXGlue's `thirdparty/libmspack`
   uses Unix symlinks that do not survive a Windows `git clone`. Replace each stub with a
-  real copy of the target file before building (or clone inside WSL and copy out).
+  real copy of the target file before building (or clone inside WSL and copy out), then apply
+  `patches\rexglue-libmspack-v0.3.patch`.
 
 - **Build tools on PATH:**
   - CMake and Ninja (ship with Visual Studio 2022; add their `bin/` dirs to the session PATH)

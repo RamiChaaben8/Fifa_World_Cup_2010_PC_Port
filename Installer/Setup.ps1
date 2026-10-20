@@ -160,7 +160,7 @@ $notice = New-Object System.Windows.Forms.Label
 $notice.Location = New-Object System.Drawing.Point(152, 108)
 $notice.Size = New-Object System.Drawing.Size(490, 55)
 $notice.ForeColor = [System.Drawing.Color]::FromArgb(76, 91, 83)
-$notice.Text = 'Setup extracts the ISO and builds the PC port locally. It downloads Visual Studio C++ build tools, LLVM, and ReXGlue; several gigabytes of free space and an internet connection are required.'
+$notice.Text = 'Setup extracts the ISO and builds the PC port locally. LLVM and the ReXGlue source are included; Visual Studio C++ build tools are installed from Microsoft if missing. Several gigabytes of free space and an internet connection are required.'
 $page.Controls.Add($notice)
 
 $ownership = New-Object System.Windows.Forms.CheckBox
@@ -278,7 +278,7 @@ $installButton.Add_Click({
         $script:workerProcess = [System.Diagnostics.Process]::Start($psi)
         $installButton.Enabled = $false
         $cancelButton.Enabled = $false
-        $status.Text = 'Installing. Large downloads and the first build can take a while.'
+        $status.Text = 'Installing. Setup stays silent only briefly while it unpacks; the build can take a while.'
         $status.ForeColor = [System.Drawing.Color]::FromArgb(0, 111, 78)
         $timer.Start()
     } catch {
