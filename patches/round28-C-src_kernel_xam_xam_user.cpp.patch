@@ -1,0 +1,73 @@
+/*
+ * Round 28 diagnostic patch (ReXGlue) - BSD 3-Clause License
+ * Copyright (c) 2026, ReXGlue contributors. All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ * 3. Neither the name of the copyright holder nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES ARE DISCLAIMED. IN NO EVENT SHALL THE
+ * COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE.
+ *
+ * THIS PATCH IS AN UNREVIEWED DIAGNOSTIC AID, NOT UPSTREAM CODE.
+ * Each hunk can be compiled out: see the ROUND28_* off switches in the file.
+ */
+diff --git a/src/kernel/xam/xam_user.cpp b/src/kernel/xam/xam_user.cpp
+--- a/src/kernel/xam/xam_user.cpp
++++ b/src/kernel/xam/xam_user.cpp
+@@ -27,6 +27,17 @@
+ #include <rex/system/xio.h>
+ #include <rex/system/xthread.h>
+ #include <rex/system/xtypes.h>
++
++// ROUND28_HUNK_C off switch: compile with -DROUND28_HUNK_C=0 to remove the
++// Round-28 XAM content/user/UI tracing added for the save investigation.
++#ifndef ROUND28_HUNK_C
++#define ROUND28_HUNK_C 1
++#endif
++#if ROUND28_HUNK_C
++#define R28C_LOG(...) REXKRNL_INFO("ROUND28C " __VA_ARGS__)
++#else
++#define R28C_LOG(...) do { } while (0)
++#endif
+ 
+ REXCVAR_DEFINE_UINT32(user_language, 1, "Kernel", "User's language ID");
+ 
+@@ -73,6 +84,7 @@
+       signin_state = user_profile->signin_state();
+     }
+   }
++  R28C_LOG("XamUserGetSigninState user_index={} -> 0x{:08X}", uint32_t(user_index), signin_state);
+   return signin_state;
+ }
+ 
+@@ -288,6 +300,10 @@
+                                      u32 setting_count, mapped_u32 setting_ids,
+                                      mapped_u32 buffer_size_ptr, mapped_void buffer_ptr,
+                                      ppc_ptr_t<XAM_OVERLAPPED> overlapped) {
++  R28C_LOG("XamUserReadProfileSettings title_id={:08X} user_index={} xuid_count={} "
++           "setting_count={}",
++           uint32_t(title_id), uint32_t(user_index), uint32_t(xuid_count),
++           uint32_t(setting_count));
+   return XamUserReadProfileSettingsEx(title_id, user_index, xuid_count, xuids, setting_count,
+                                       setting_ids, 0, buffer_size_ptr, buffer_ptr, overlapped);
+ }
+@@ -304,6 +320,8 @@
+ u32 XamUserWriteProfileSettings_entry(u32 title_id, u32 user_index, u32 setting_count,
+                                       ppc_ptr_t<X_USER_PROFILE_SETTING> settings,
+                                       ppc_ptr_t<XAM_OVERLAPPED> overlapped) {
++  R28C_LOG("XamUserWriteProfileSettings title_id={:08X} user_index={} setting_count={}",
++           uint32_t(title_id), uint32_t(user_index), uint32_t(setting_count));
+   if (!setting_count || !settings) {
+     return X_ERROR_INVALID_PARAMETER;
+   }

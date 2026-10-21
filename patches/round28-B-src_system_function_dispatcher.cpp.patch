@@ -1,0 +1,180 @@
+/*
+ * Round 28 diagnostic patch (ReXGlue) - BSD 3-Clause License
+ * Copyright (c) 2026, ReXGlue contributors. All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ * 3. Neither the name of the copyright holder nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES ARE DISCLAIMED. IN NO EVENT SHALL THE
+ * COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE.
+ *
+ * THIS PATCH IS AN UNREVIEWED DIAGNOSTIC AID, NOT UPSTREAM CODE.
+ * Each hunk can be compiled out: see the ROUND28_* off switches in the file.
+ */
+diff --git a/src/system/function_dispatcher.cpp b/src/system/function_dispatcher.cpp
+--- a/src/system/function_dispatcher.cpp
++++ b/src/system/function_dispatcher.cpp
+@@ -13,6 +13,7 @@
+  *              role as a function dispatch table rather than a CPU emulator.
+  */
+ 
++#include <algorithm>
+ #include <atomic>
+ #include <chrono>
+ #include <cstdlib>
+@@ -44,9 +45,65 @@
+                     "FIFA Street only: every two seconds log how many swaps asked for each present interval "
+                     "(0..15) and how many were capped, to find which scenes use an interval above 1.");
+ 
++// ---------------------------------------------------------------------------
++// ROUND28_HUNK_B off switch: compile with -DROUND28_HUNK_B=0 to remove the full
++// guest-context dump added for the throw-in crash investigation.
++// ---------------------------------------------------------------------------
++#ifndef ROUND28_HUNK_B
++#define ROUND28_HUNK_B 1
++#endif
++
+ namespace rex::runtime {
+ 
+ namespace {
++
++#if ROUND28_HUNK_B
++// Dumps 64 bytes of guest memory at `guest`, but only after confirming the region
++// is committed, so the fatal path cannot take a second fault while reporting.
++void Round28DumpBytes(::rex::memory::Memory* mem, const char* tag, uint32_t guest) {
++  if (!mem) {
++    REXCPU_ERROR("    [{}] 0x{:08X} (no memory object)", tag, guest);
++    return;
++  }
++  auto* heap = mem->LookupHeap(guest);
++  ::rex::memory::HeapAllocationInfo info{};
++  const bool committed = heap && heap->QueryRegionInfo(guest, &info) &&
++                         (info.state & ::rex::memory::kMemoryAllocationCommit);
++  if (!committed) {
++    REXCPU_ERROR("    [{}] 0x{:08X} (page not committed; not dumped)", tag, guest);
++    return;
++  }
++  const uint8_t* p = mem->TranslateVirtual(guest);
++  const uint32_t n = 64;
++  std::string text;
++  for (uint32_t i = 0; i < n; i += 16) {
++    text += fmt::format("      {:08X}: ", guest + i);
++    for (uint32_t j = 0; j < 16; ++j) text += fmt::format("{:02X} ", p[i + j]);
++    text += " ";
++    for (uint32_t j = 0; j < 16; ++j) {
++      const uint8_t c = p[i + j];
++      text += (c >= 0x20 && c < 0x7F) ? static_cast<char>(c) : '.';
++    }
++    if (i + 16 < n) text += "\n";
++  }
++  REXCPU_ERROR("    [{}] 0x{:08X}\n{}", tag, guest, text);
++}
++
++// Dumps `tag` (a register value) and, when that location is committed, the
++// pointer stored there and the 64 bytes it points at.
++void Round28DumpRegAndPointee(::rex::memory::Memory* mem, const char* tag, uint32_t value) {
++  Round28DumpBytes(mem, tag, value);
++  auto* heap = mem ? mem->LookupHeap(value) : nullptr;
++  ::rex::memory::HeapAllocationInfo info{};
++  if (value && heap && heap->QueryRegionInfo(value, &info) &&
++      (info.state & ::rex::memory::kMemoryAllocationCommit)) {
++    const uint8_t* p = mem->TranslateVirtual(value);
++    const uint32_t pointee =
++        (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | uint32_t(p[3]);
++    Round28DumpBytes(mem, (std::string(tag) + "->*").c_str(), pointee);
++  }
++}
++#endif  // ROUND28_HUNK_B
+ 
+ FunctionDispatcher* GetBoundFunctionDispatcher() {
+   Runtime* runtime = Runtime::instance();
+@@ -165,6 +222,10 @@
+       static_cast<uint32_t>(ctx.r11.u64),
+       static_cast<uint32_t>(ctx.r12.u64));
+ 
++#if ROUND28_HUNK_B
++  Round28DumpGuestContext(ctx, "invalid indirect call");
++#endif
++
+   REX_FATAL("Call to invalid or unregistered function at guest address 0x{:08X}",
+             ctx.last_indirect_target);
+ }
+@@ -181,6 +242,67 @@
+ 
+   return &InvalidFunctionTrap;
+ }
++
++uint32_t FunctionDispatcher::FindContainingFunctionStart(uint32_t guest_address) {
++  std::lock_guard<std::recursive_mutex> lock(dispatch_mutex_);
++  std::vector<uint32_t> starts;
++  starts.reserve(function_table_.size());
++  for (const auto& entry : function_table_) {
++    starts.push_back(entry.first);
++  }
++  if (starts.empty()) {
++    return 0;
++  }
++  std::sort(starts.begin(), starts.end());
++  auto it = std::upper_bound(starts.begin(), starts.end(), guest_address);
++  if (it == starts.begin()) {
++    return 0;
++  }
++  return *std::prev(it);
++}
++
++#if ROUND28_HUNK_B
++void Round28DumpGuestContext(PPCContext& ctx, const char* why) {
++  FunctionDispatcher* dispatcher = GetBoundFunctionDispatcher();
++  ::rex::memory::Memory* mem = dispatcher ? dispatcher->memory() : nullptr;
++  const uint32_t lr = static_cast<uint32_t>(ctx.lr);
++
++  PPCRegister* gprs[32] = {
++      &ctx.r0,  &ctx.r1,  &ctx.r2,  &ctx.r3,  &ctx.r4,  &ctx.r5,  &ctx.r6,  &ctx.r7,
++      &ctx.r8,  &ctx.r9,  &ctx.r10, &ctx.r11, &ctx.r12, &ctx.r13, &ctx.r14, &ctx.r15,
++      &ctx.r16, &ctx.r17, &ctx.r18, &ctx.r19, &ctx.r20, &ctx.r21, &ctx.r22, &ctx.r23,
++      &ctx.r24, &ctx.r25, &ctx.r26, &ctx.r27, &ctx.r28, &ctx.r29, &ctx.r30, &ctx.r31};
++  std::string gpr;
++  for (int i = 0; i < 32; ++i) {
++    gpr += fmt::format("r{}={:08X} ", i, static_cast<uint32_t>(gprs[i]->u64));
++    if ((i & 7) == 7 && i != 31) gpr += "\n    ";
++  }
++  REXCPU_ERROR("ROUND28 guest context ({})\n    {}\n    LR={:08X} CTR={:08X}", why, gpr, lr,
++               static_cast<uint32_t>(ctx.ctr.u64));
++
++  if (dispatcher) {
++    const uint32_t start = dispatcher->FindContainingFunctionStart(lr);
++    const uint32_t module = dispatcher->FindCallerModuleBase(lr);
++    REXCPU_ERROR(
++        "ROUND28 LR nearest registered function 0x{:08X} (+0x{:X}); module code base 0x{:08X}"
++        "{}",
++        start, lr - start, module,
++        (start == 0 || (lr - start) > 0x40000)
++            ? fmt::format(" [WARNING nearest-lower is not proof of containment, +0x{:X}]",
++                          lr - start)
++            : std::string());
++  } else {
++    REXCPU_ERROR("ROUND28 LR function: dispatcher unavailable");
++  }
++
++  Round28DumpRegAndPointee(mem, "r3", static_cast<uint32_t>(ctx.r3.u64));
++  Round28DumpRegAndPointee(mem, "r8", static_cast<uint32_t>(ctx.r8.u64));
++  Round28DumpRegAndPointee(mem, "r9", static_cast<uint32_t>(ctx.r9.u64));
++  Round28DumpRegAndPointee(mem, "r11", static_cast<uint32_t>(ctx.r11.u64));
++  Round28DumpRegAndPointee(mem, "r30", static_cast<uint32_t>(ctx.r30.u64));
++  Round28DumpRegAndPointee(mem, "r31", static_cast<uint32_t>(ctx.r31.u64));
++}
++#endif  // ROUND28_HUNK_B
+ 
+ FunctionDispatcher::FunctionDispatcher(rex::memory::Memory* memory, ExportResolver* export_resolver)
+     : memory_(memory), export_resolver_(export_resolver) {}

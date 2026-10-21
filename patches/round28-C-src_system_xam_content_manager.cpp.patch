@@ -1,0 +1,89 @@
+/*
+ * Round 28 diagnostic patch (ReXGlue) - BSD 3-Clause License
+ * Copyright (c) 2026, ReXGlue contributors. All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ * 3. Neither the name of the copyright holder nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES ARE DISCLAIMED. IN NO EVENT SHALL THE
+ * COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE.
+ *
+ * THIS PATCH IS AN UNREVIEWED DIAGNOSTIC AID, NOT UPSTREAM CODE.
+ * Each hunk can be compiled out: see the ROUND28_* off switches in the file.
+ */
+diff --git a/src/system/xam/content_manager.cpp b/src/system/xam/content_manager.cpp
+--- a/src/system/xam/content_manager.cpp
++++ b/src/system/xam/content_manager.cpp
+@@ -24,7 +24,19 @@
+ #include <rex/system/xam/content_device.h>
+ #include <rex/system/xam/content_manager.h>
+ #include <rex/system/xfile.h>
++#include <rex/logging.h>
+ #include <rex/system/xobject.h>
++
++// ROUND28_HUNK_C off switch: compile with -DROUND28_HUNK_C=0 to remove the
++// Round-28 XAM content/user/UI tracing added for the save investigation.
++#ifndef ROUND28_HUNK_C
++#define ROUND28_HUNK_C 1
++#endif
++#if ROUND28_HUNK_C
++#define R28C_LOG(...) REXKRNL_INFO("ROUND28C " __VA_ARGS__)
++#else
++#define R28C_LOG(...) do { } while (0)
++#endif
+ 
+ namespace rex {
+ namespace system {
+@@ -148,6 +160,8 @@
+   // Search path:
+   // content_root/xuid/title_id/type_name/*
+   auto package_root = ResolvePackageRoot(xuid, content_type, title_id);
++  R28C_LOG("ListContent scan device_id={} xuid={:016X} type={:08X} title_id={:08X} root='{}'",
++           device_id, xuid, uint32_t(content_type), title_id, rex::path_to_utf8(package_root));
+   auto file_infos = rex::filesystem::ListFiles(package_root);
+   for (const auto& file_info : file_infos) {
+     if (file_info.type != rex::filesystem::FileInfo::Type::kDirectory) {
+@@ -156,8 +170,12 @@
+     }
+ 
+     XCONTENT_AGGREGATE_DATA content_data;
+-    if (XSUCCEEDED(ReadContentHeaderFile(rex::path_to_utf8(file_info.name), xuid, title_id,
+-                                         content_type, content_data))) {
++    const bool have_header =
++        XSUCCEEDED(ReadContentHeaderFile(rex::path_to_utf8(file_info.name), xuid, title_id,
++                                         content_type, content_data));
++    R28C_LOG("ListContent item '{}' header_read={}", rex::path_to_utf8(file_info.name),
++             have_header);
++    if (have_header) {
+       result.emplace_back(std::move(content_data));
+     } else {
+       content_data.device_id = device_id;
+@@ -170,6 +188,8 @@
+     }
+   }
+ 
++  R28C_LOG("ListContent xuid={:016X} type={:08X} title_id={:08X} root='{}' -> {} item(s)", xuid,
++           uint32_t(content_type), title_id, rex::path_to_utf8(package_root), result.size());
+   return result;
+ }
+ 
+@@ -295,6 +315,8 @@
+   }
+ 
+   auto package_path = ResolvePackagePath(xuid, data);
++  R28C_LOG("OpenContent root='{}' path='{}' exists={}", std::string(root_name),
++           rex::path_to_utf8(package_path), std::filesystem::exists(package_path));
+   if (!std::filesystem::exists(package_path)) {
+     return X_ERROR_FILE_NOT_FOUND;
+   }

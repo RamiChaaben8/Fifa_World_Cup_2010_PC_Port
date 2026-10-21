@@ -1,0 +1,96 @@
+/*
+ * Round 28 diagnostic patch (ReXGlue) - BSD 3-Clause License
+ * Copyright (c) 2026, ReXGlue contributors. All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ * 3. Neither the name of the copyright holder nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES ARE DISCLAIMED. IN NO EVENT SHALL THE
+ * COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE.
+ *
+ * THIS PATCH IS AN UNREVIEWED DIAGNOSTIC AID, NOT UPSTREAM CODE.
+ * Each hunk can be compiled out: see the ROUND28_* off switches in the file.
+ */
+diff --git a/src/kernel/xam/xam_content.cpp b/src/kernel/xam/xam_content.cpp
+--- a/src/kernel/xam/xam_content.cpp
++++ b/src/kernel/xam/xam_content.cpp
+@@ -23,6 +23,17 @@
+ 
+ REXCVAR_DEFINE_UINT32(license_mask, 0, "Kernel", "Set license mask for activated content");
+ 
++// ROUND28_HUNK_C off switch: compile with -DROUND28_HUNK_C=0 to remove the
++// Round-28 XAM content/user/UI tracing added for the save investigation.
++#ifndef ROUND28_HUNK_C
++#define ROUND28_HUNK_C 1
++#endif
++#if ROUND28_HUNK_C
++#define R28C_LOG(...) REXKRNL_INFO("ROUND28C " __VA_ARGS__)
++#else
++#define R28C_LOG(...) do { } while (0)
++#endif
++
+ namespace rex {
+ namespace kernel {
+ namespace xam {
+@@ -108,6 +119,10 @@
+   }
+ 
+   REXKRNL_DEBUG("XamContentCreateEnumerator: added {} items to enumerator", e->item_count());
++  R28C_LOG("XamContentCreateEnumerator user_index={} device_id={} content_type={:08X} "
++           "content_flags={:08X} items_per_enumerate={} -> items={}",
++           uint32_t(user_index), uint32_t(device_id), uint32_t(content_type),
++           uint32_t(content_flags), uint32_t(items_per_enumerate), e->item_count());
+ 
+   *handle_out = e->handle();
+   return X_ERROR_SUCCESS;
+@@ -134,6 +149,12 @@
+   if (content_data.content_type == XContentType::kMarketplaceContent) {
+     xuid = 0;
+   }
++
++  R28C_LOG("xeXamContentCreate root='{}' flags={:08X} size={} type={:08X} title_id={:08X} "
++           "xuid={:016X} resolved_xuid={:016X}",
++           root_name.value(), uint32_t(flags), uint32_t(content_data_size),
++           uint32_t(content_data.content_type.get()), uint32_t(content_data.title_id),
++           uint64_t(content_data.xuid), uint64_t(xuid));
+ 
+   auto content_manager = REX_KERNEL_STATE()->content_manager();
+ 
+@@ -216,6 +237,8 @@
+       result = content_manager->OpenContent(root_name, xuid, content_data, content_license);
+     }
+ 
++    R28C_LOG("xeXamContentCreate root='{}' disposition={} -> result=0x{:08X}", root_name,
++             static_cast<uint32_t>(disposition), uint32_t(result));
+     if (license_mask_ptr && XSUCCEEDED(result)) {
+       *license_mask_ptr = content_license;
+     }
+@@ -281,6 +304,7 @@
+ u32 XamContentClose_entry(mapped_string root_name, mapped_void overlapped_ptr) {
+   // Closes a previously opened root from XamContentCreate*.
+   auto result = REX_KERNEL_STATE()->content_manager()->CloseContent(root_name.value());
++  R28C_LOG("XamContentClose root='{}' -> 0x{:08X}", root_name.value(), uint32_t(result));
+ 
+   if (overlapped_ptr) {
+     REX_KERNEL_STATE()->CompleteOverlappedImmediate(overlapped_ptr.guest_address(), result);
+@@ -403,6 +427,9 @@
+   XCONTENT_AGGREGATE_DATA content_data = *content_data_ptr.as<XCONTENT_AGGREGATE_DATA*>();
+ 
+   auto result = REX_KERNEL_STATE()->content_manager()->DeleteContent(xuid, content_data);
++  R28C_LOG("XamContentDeleteInternal type={:08X} title_id={:08X} -> 0x{:08X}",
++           uint32_t(content_data.content_type.get()), uint32_t(content_data.title_id),
++           uint32_t(result));
+ 
+   if (overlapped_ptr) {
+     REX_KERNEL_STATE()->CompleteOverlappedImmediate(overlapped_ptr.guest_address(), result);

@@ -1,0 +1,53 @@
+diff --git a/ReXGlue/src/kernel/xam/xam_user.cpp b/ReXGlue/src/kernel/xam/xam_user.cpp
+index 45df66f..b0ddb08 100644
+--- a/ReXGlue/src/kernel/xam/xam_user.cpp
++++ b/ReXGlue/src/kernel/xam/xam_user.cpp
+@@ -52,6 +52,13 @@
+ #define R29D_LOG(...) do { } while (0)
+ #endif
+ 
++// ROUND30_FIX off switch: compile with -DROUND30_FIX=0 to restore the Round-29
++// sign-in logging (one shared (user_index, state) pair, which logged every call
++// because the game polls indices 0..3 round-robin).
++#ifndef ROUND30_FIX
++#define ROUND30_FIX 1
++#endif
++
+ REXCVAR_DEFINE_UINT32(user_language, 1, "Kernel", "User's language ID");
+ 
+ namespace rex {
+@@ -125,10 +132,23 @@ u32 XamUserGetSigninState_entry(u32 user_index) {
+       signin_state = user_profile->signin_state();
+     }
+   }
+-  // Round 29: this export is polled every frame (116,936 of the 116,987 ROUND28C
+-  // lines in the ~191 s run worldcup2010_021).  Log only when the returned value
+-  // changes for a given user index.
++  // Round 29/30: this export is polled every frame (126,928 ROUND28C lines in the
++  // 023 run).  Round 29 tracked one shared (user_index, state) pair, so the game's
++  // round-robin polling of indices 0..3 made every call look like a change.  Track
++  // the last returned state per user index and log only a real change.
+   {
++#if ROUND30_FIX
++    static bool r30_logged[5] = {false, false, false, false, false};
++    static uint32_t r30_last_state[5] = {0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu,
++                                         0xFFFFFFFFu};
++    const uint32_t slot = uint32_t(user_index) < 4 ? uint32_t(user_index) : 4;
++    if (!r30_logged[slot] || r30_last_state[slot] != signin_state) {
++      R28C_LOG("XamUserGetSigninState user_index={} -> 0x{:08X} (state changed for this index)",
++               uint32_t(user_index), signin_state);
++      r30_logged[slot] = true;
++      r30_last_state[slot] = signin_state;
++    }
++#else
+     static bool r29_logged = false;
+     static uint32_t r29_last_user_index = 0xFFFFFFFFu;
+     static uint32_t r29_last_state = 0xFFFFFFFFu;
+@@ -141,6 +161,7 @@ u32 XamUserGetSigninState_entry(u32 user_index) {
+       r29_last_user_index = uint32_t(user_index);
+       r29_last_state = signin_state;
+     }
++#endif
+   }
+   return signin_state;
+ }

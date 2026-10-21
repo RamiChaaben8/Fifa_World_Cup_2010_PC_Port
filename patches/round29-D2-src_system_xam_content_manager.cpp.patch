@@ -1,0 +1,113 @@
+/*
+ * Round 29 diagnostic patch (ReXGlue) - BSD 3-Clause License
+ * Copyright (c) 2026, ReXGlue contributors. All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ * 3. Neither the name of the copyright holder nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES ARE DISCLAIMED. IN NO EVENT SHALL THE
+ * COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE.
+ *
+ * THIS PATCH IS AN UNREVIEWED DIAGNOSTIC AID, NOT UPSTREAM CODE.
+ * Each hunk can be compiled out: see the ROUND29_HUNK_D off switch in the file.
+ *
+ * Hunk D of Round 29.  Hunks A (null-page guard) and B (guest-context dump)
+ * from Round 28 are NOT touched by this patch.
+ */
+diff --git a/src/system/xam/content_manager.cpp b/src/system/xam/content_manager.cpp
+--- a/src/system/xam/content_manager.cpp
++++ b/src/system/xam/content_manager.cpp
+@@ -16,11 +16,13 @@
+ 
+ #include <fmt/format.h>
+ 
++#include <rex/cvar.h>
+ #include <rex/filesystem.h>
+ #include <rex/filesystem/devices/host_path_device.h>
+ #include <rex/filesystem/devices/stfs_container_device.h>
+ #include <rex/string.h>
+ #include <rex/system/kernel_state.h>
++#include <rex/system/thread_state.h>
+ #include <rex/system/xam/content_device.h>
+ #include <rex/system/xam/content_manager.h>
+ #include <rex/system/xfile.h>
+@@ -38,11 +40,68 @@
+ #define R28C_LOG(...) do { } while (0)
+ #endif
+ 
++// ROUND29_HUNK_D off switch: compile with -DROUND29_HUNK_D=0 to remove the
++// Round-29 XUID shim (recovery of a 64-bit guest argument truncated by the
++// host argument marshaller) and its tracing.
++#ifndef ROUND29_HUNK_D
++#define ROUND29_HUNK_D 1
++#endif
++#if ROUND29_HUNK_D
++#define R29D_LOG(...) REXKRNL_INFO("ROUND29D " __VA_ARGS__)
++#else
++#define R29D_LOG(...) do { } while (0)
++#endif
++
++REXCVAR_DEFINE_BOOL(round29_xuid_shim, true, "Kernel",
++                    "Round 29: resolve a zero-upper-32-bit XUID argument to the profile XUID");
++
+ namespace rex {
+ namespace system {
+ namespace xam {
+ 
+ static const char* kThumbnailFileName = "__thumbnail.png";
++
++// ---------------------------------------------------------------------------
++// Round 29 diagnostics + XUID shim (FIFA World Cup 2010 save investigation).
++// ---------------------------------------------------------------------------
++
++uint32_t Round29GuestCallerLr() {
++#if ROUND29_HUNK_D
++  if (auto* ts = rex::runtime::ThreadState::Get()) {
++    if (auto* ctx = ts->context()) {
++      return static_cast<uint32_t>(ctx->lr);
++    }
++  }
++#endif
++  return 0;
++}
++
++uint64_t Round29ResolveXuid(uint64_t requested, const char* site) {
++#if ROUND29_HUNK_D
++  const uint32_t lr = Round29GuestCallerLr();
++  if (REXCVAR_GET(round29_xuid_shim)) {
++    if (auto* ks = rex::system::kernel_state()) {
++      if (auto* profile = ks->user_profile()) {
++        const uint64_t profile_xuid = profile->xuid();
++        if ((requested >> 32) == 0 && profile_xuid != 0 &&
++            static_cast<uint32_t>(requested) == static_cast<uint32_t>(profile_xuid) &&
++            requested != profile_xuid) {
++          R29D_LOG(
++              "xuid shim[{}]: requested={:016X} -> profile_xuid={:016X} "
++              "(upper 32 bits zero, lower 32 bits match) caller=0x{:08X}",
++              site, requested, profile_xuid, lr);
++          return profile_xuid;
++        }
++      }
++    }
++  }
++  R29D_LOG("xuid shim[{}]: requested={:016X} unchanged caller=0x{:08X}", site, requested, lr);
++#else
++  (void)site;
++#endif
++  return requested;
++}
++
+ 
+ static const char* kGameUserContentDirName = "profile";
+ 

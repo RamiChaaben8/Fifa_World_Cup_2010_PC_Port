@@ -1,0 +1,92 @@
+/*
+ * Round 29 diagnostic patch (ReXGlue) - BSD 3-Clause License
+ * Copyright (c) 2026, ReXGlue contributors. All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ * 3. Neither the name of the copyright holder nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES ARE DISCLAIMED. IN NO EVENT SHALL THE
+ * COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE.
+ *
+ * THIS PATCH IS AN UNREVIEWED DIAGNOSTIC AID, NOT UPSTREAM CODE.
+ * Each hunk can be compiled out: see the ROUND29_HUNK_D off switch in the file.
+ *
+ * Hunk D of Round 29.  Hunks A (null-page guard) and B (guest-context dump)
+ * from Round 28 are NOT touched by this patch.
+ */
+diff --git a/src/kernel/xam/xam_content_aggregate.cpp b/src/kernel/xam/xam_content_aggregate.cpp
+--- a/src/kernel/xam/xam_content_aggregate.cpp
++++ b/src/kernel/xam/xam_content_aggregate.cpp
+@@ -20,6 +20,7 @@
+ #include <rex/system/kernel_state.h>
+ #include <rex/system/user_module.h>
+ #include <rex/system/xam/content_device.h>
++#include <rex/system/xam/content_manager.h>
+ #include <rex/system/xenumerator.h>
+ #include <rex/system/xtypes.h>
+ 
+@@ -38,6 +39,18 @@
+ #define R28C_LOG(...) REXKRNL_INFO("ROUND28C " __VA_ARGS__)
+ #else
+ #define R28C_LOG(...) do { } while (0)
++#endif
++
++// ROUND29_HUNK_D off switch: compile with -DROUND29_HUNK_D=0 to remove the
++// Round-29 XUID shim (recovery of a 64-bit guest argument truncated by the
++// host argument marshaller) and its tracing.
++#ifndef ROUND29_HUNK_D
++#define ROUND29_HUNK_D 1
++#endif
++#if ROUND29_HUNK_D
++#define R29D_LOG(...) REXKRNL_INFO("ROUND29D " __VA_ARGS__)
++#else
++#define R29D_LOG(...) do { } while (0)
+ #endif
+ 
+ void AddODDContentTest(object_ref<XStaticEnumerator<XCONTENT_AGGREGATE_DATA>> e,
+@@ -112,6 +125,15 @@
+   auto content_type_enum = XContentType(uint32_t(content_type));
+ 
+   uint64_t userxuid = REX_KERNEL_STATE()->user_profile()->xuid();
++  // Round 29: the guest loads the XUID with a full 64-bit `ld` and passes it in r3,
++  // but the host argument marshaller only forwards r3's low 32 bits; recover the
++  // profile XUID when that is what the low 32 bits match.
++  const uint64_t requested_xuid = uint64_t(xuid);
++  const uint64_t resolved_xuid =
++      rex::system::xam::Round29ResolveXuid(requested_xuid, "aggregate-enumerator");
++  R29D_LOG("XamContentAggregateCreateEnumerator caller=0x{:08X} xuid_in={:016X} "
++           "xuid_used={:016X}",
++           rex::system::xam::Round29GuestCallerLr(), requested_xuid, resolved_xuid);
+   R28C_LOG("XamContentAggregateCreateEnumerator args xuid={:016X} device_id={} type={:08X} "
+            "unk3(title_id?)={:08X} runtime_xuid={:016X}",
+            uint64_t(xuid), uint32_t(device_id), uint32_t(content_type), uint32_t(unk3),
+@@ -130,7 +152,8 @@
+     for (auto& title_id : title_ids) {
+       // Get user-specific content
+       auto content_datas = REX_KERNEL_STATE()->content_manager()->ListContent(
+-          static_cast<uint32_t>(DummyDeviceId::HDD), xuid, content_type_enum, title_id);
++          static_cast<uint32_t>(DummyDeviceId::HDD), resolved_xuid, content_type_enum,
++          title_id);
+       for (const auto& content_data : content_datas) {
+         auto item = e->AppendItem();
+         assert_not_null(item);
+@@ -161,7 +184,7 @@
+   REXKRNL_DEBUG("XamContentAggregateCreateEnumerator: added {} items to enumerator",
+                 e->item_count());
+   R28C_LOG("XamContentAggregateCreateEnumerator xuid={:016X} device_id={} type={:08X} -> items={}",
+-           uint64_t(xuid), uint32_t(device_id), uint32_t(content_type), e->item_count());
++           resolved_xuid, uint32_t(device_id), uint32_t(content_type), e->item_count());
+ 
+   *handle_out = e->handle();
+   return X_ERROR_SUCCESS;

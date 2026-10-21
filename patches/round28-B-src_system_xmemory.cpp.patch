@@ -1,0 +1,44 @@
+/*
+ * Round 28 diagnostic patch (ReXGlue) - BSD 3-Clause License
+ * Copyright (c) 2026, ReXGlue contributors. All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ * 3. Neither the name of the copyright holder nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES ARE DISCLAIMED. IN NO EVENT SHALL THE
+ * COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE.
+ *
+ * THIS PATCH IS AN UNREVIEWED DIAGNOSTIC AID, NOT UPSTREAM CODE.
+ * Each hunk can be compiled out: see the ROUND28_* off switches in the file.
+ */
+diff --git a/src/system/xmemory.cpp b/src/system/xmemory.cpp
+--- a/src/system/xmemory.cpp
++++ b/src/system/xmemory.cpp
+@@ -610,6 +610,16 @@
+         "Unhandled guest access violation: {} of guest 0x{:08X} (host 0x{:016X}) on thread 0x{:X}",
+         is_write ? "write" : "read", virtual_address, reinterpret_cast<uintptr_t>(host_address),
+         rex::thread::current_thread_id());
++#if ROUND28_HUNK_B
++    // The faulting host thread is a guest thread here, so its PPCContext is live;
++    // guard anyway (a host-side fault has no ThreadState).
++    if (auto* ts = rex::runtime::ThreadState::Get()) {
++      if (auto* ctx = ts->context()) {
++        rex::runtime::Round28DumpGuestContext(
++            *ctx, is_write ? "guest access violation (write)" : "guest access violation (read)");
++      }
++    }
++#endif
+     return false;
+   }
+ 

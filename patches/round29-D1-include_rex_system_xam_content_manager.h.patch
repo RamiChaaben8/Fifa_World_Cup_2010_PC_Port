@@ -1,0 +1,60 @@
+/*
+ * Round 29 diagnostic patch (ReXGlue) - BSD 3-Clause License
+ * Copyright (c) 2026, ReXGlue contributors. All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ * 3. Neither the name of the copyright holder nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES ARE DISCLAIMED. IN NO EVENT SHALL THE
+ * COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE.
+ *
+ * THIS PATCH IS AN UNREVIEWED DIAGNOSTIC AID, NOT UPSTREAM CODE.
+ * Each hunk can be compiled out: see the ROUND29_HUNK_D off switch in the file.
+ *
+ * Hunk D of Round 29.  Hunks A (null-page guard) and B (guest-context dump)
+ * from Round 28 are NOT touched by this patch.
+ */
+diff --git a/include/rex/system/xam/content_manager.h b/include/rex/system/xam/content_manager.h
+--- a/include/rex/system/xam/content_manager.h
++++ b/include/rex/system/xam/content_manager.h
+@@ -115,6 +115,29 @@
+   }
+ };
+ static_assert_size(XCONTENT_AGGREGATE_DATA, 0x148);
++
++// ---------------------------------------------------------------------------
++// Round 29 diagnostics (FIFA World Cup 2010 save / XUID investigation).
++// ---------------------------------------------------------------------------
++
++// The guest LR of the current export entry (i.e. the guest call site), or 0
++// when no guest thread is bound to the calling thread.
++uint32_t Round29GuestCallerLr();
++
++// ReXGlue's guest->host argument marshaller reads a 64-bit integer argument
++// from the *low 32 bits* of the argument register only, so a guest XUID passed
++// as a function argument arrives at the export as 0x00000000<low 32 bits>:
++//
++//   include/rex/ppc/function.h
++//   ArgTranslator::GetIntegerArgumentValue() -> `return ctx.r3.u32;` etc.
++//
++// When |requested| has a zero upper 32 bits and its low 32 bits equal the
++// current profile XUID's low 32 bits, this returns the full profile XUID;
++// otherwise |requested| is returned unchanged.  Every call is logged, and
++// substitutions can be disabled with the `round29_xuid_shim` cvar.
++// Compiled out with -DROUND29_HUNK_D=0.
++uint64_t Round29ResolveXuid(uint64_t requested, const char* site);
++
+ 
+ class ContentPackage {
+  public:

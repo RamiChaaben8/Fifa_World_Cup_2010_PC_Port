@@ -272,7 +272,7 @@ try {
         } else {
             [void][IO.Directory]::CreateDirectory($temporaryGameData)
             Write-SetupLog 'Extracting the selected ISO locally. Reading the whole ISO can take several minutes. The ISO is not uploaded or copied into the release.'
-            Invoke-Tool (Join-Path $PackageRoot 'Installer\tools\extract-xiso.exe') @('-x','-d',$temporaryGameData,$IsoPath) $PackageRoot
+            Invoke-Tool (Join-Path $PackageRoot 'Installer\tools\extract-xiso.exe') @('-s','-x','-d',$temporaryGameData,$IsoPath) $PackageRoot
             if (-not (Test-Path -LiteralPath (Join-Path $temporaryGameData 'default.xex')) -or
                 -not (Test-Path -LiteralPath (Join-Path $temporaryGameData 'fifadllzf.xex'))) {
                 throw 'The selected ISO did not extract the expected default.xex and fifadllzf.xex files at its root.'

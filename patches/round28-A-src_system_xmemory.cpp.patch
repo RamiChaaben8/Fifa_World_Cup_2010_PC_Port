@@ -1,0 +1,75 @@
+/*
+ * Round 28 diagnostic patch (ReXGlue) - BSD 3-Clause License
+ * Copyright (c) 2026, ReXGlue contributors. All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ * 3. Neither the name of the copyright holder nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES ARE DISCLAIMED. IN NO EVENT SHALL THE
+ * COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE.
+ *
+ * THIS PATCH IS AN UNREVIEWED DIAGNOSTIC AID, NOT UPSTREAM CODE.
+ * Each hunk can be compiled out: see the ROUND28_* off switches in the file.
+ */
+diff --git a/src/system/xmemory.cpp b/src/system/xmemory.cpp
+--- a/src/system/xmemory.cpp
++++ b/src/system/xmemory.cpp
+@@ -41,6 +41,20 @@
+                     "Protect released memory to prevent accesses");
+ 
+ REXCVAR_DEFINE_BOOL(scribble_heap, false, "Memory", "Scribble 0xCD into all allocated heap memory");
++
++// ---------------------------------------------------------------------------
++// ROUND28 off switches (compile out with -DROUND28_HUNK_A=0 / -DROUND28_HUNK_B=0).
++//   HUNK_A: never commit guest page 0 on demand; a null-page access falls
++//           through to the existing fatal path (the pre-workaround behaviour).
++//   HUNK_B: on a guest access violation, dump every GPR and bounded,
++//           page-checked memory around the key registers.
++// ---------------------------------------------------------------------------
++#ifndef ROUND28_HUNK_A
++#define ROUND28_HUNK_A 1
++#endif
++#ifndef ROUND28_HUNK_B
++#define ROUND28_HUNK_B 1
++#endif
+ 
+ namespace rex::memory {
+ 
+@@ -574,8 +588,26 @@
+     static std::atomic<uint32_t> guest_virtual_fault_commits{0};
+     const uint32_t fault_page_size = heap->page_size();
+     const uint32_t fault_page = virtual_address - (virtual_address % fault_page_size);
++#if ROUND28_HUNK_A
++    // ROUND28_HUNK_A: guest addresses below 0x10000 are the deliberately
++    // unreadable low page (Memory::Initialize commits it with no access, honouring
++    // the "protect_zero" cvar). A guest that reads or writes it is dereferencing a
++    // null/near-null pointer; do not paper over that by committing the page here.
++    // Fall through so the access reaches the fatal path below and the real call
++    // site is reported. Addresses at 0x10000 and above are unchanged, so the
++    // v40000000 heap and the first-touch 0x6C000 case keep their on-demand commit.
++    if (fault_page < 0x10000) {
++      REXSYS_ERROR(
++          "Null-page access: guest {} of 0x{:08X} (host 0x{:016X}, page 0x{:08X}): refusing "
++          "on-demand commit below 0x10000; falling through to the fatal path",
++          is_write ? "write" : "read", virtual_address,
++          static_cast<uint64_t>(reinterpret_cast<uintptr_t>(host_address)), fault_page);
++    } else if (guest_virtual_fault_commits.load(std::memory_order_relaxed) >=
++               kGuestVirtualFaultCommitLimit) {
++#else
+     if (guest_virtual_fault_commits.load(std::memory_order_relaxed) >=
+         kGuestVirtualFaultCommitLimit) {
++#endif
+       REXSYS_ERROR(
+           "Guest virtual on-demand commit limit ({} pages) reached; guest 0x{:08X} falls back to "
+           "the fatal path",

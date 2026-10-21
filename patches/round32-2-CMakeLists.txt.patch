@@ -1,0 +1,11 @@
+diff --git a/Installer/recomp-template/CMakeLists.txt b/Installer/recomp-template/CMakeLists.txt
+index aa834a4..38e977c 100644
+--- a/Installer/recomp-template/CMakeLists.txt
++++ b/Installer/recomp-template/CMakeLists.txt
+@@ -62,5 +62,6 @@ if(TARGET worldcup2010_fifadllzf)
+     endif()
+     target_sources(worldcup2010_fifadllzf PRIVATE
+         src/stubs.cpp
++        src/round32_qichain_override.cpp
+     )
+ endif()

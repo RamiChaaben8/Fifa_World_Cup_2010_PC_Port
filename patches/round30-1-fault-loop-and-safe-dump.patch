@@ -1,0 +1,444 @@
+diff --git a/ReXGlue/src/system/function_dispatcher.cpp b/ReXGlue/src/system/function_dispatcher.cpp
+index c658bd8..737be15 100644
+--- a/ReXGlue/src/system/function_dispatcher.cpp
++++ b/ReXGlue/src/system/function_dispatcher.cpp
+@@ -45,6 +45,16 @@ REXCVAR_DEFINE_BOOL(guest_present_interval_log, false, "GPU",
+                     "FIFA Street only: every two seconds log how many swaps asked for each present interval "
+                     "(0..15) and how many were capped, to find which scenes use an interval above 1.");
+ 
++// Round 31: location and size cap for the Round-30 fault-loop minidump.
++// Default file: %TEMP%\worldcup2010_minidumps\worldcup2010_r30_<pid>_<tick>.dmp
++// (MiniDumpNormal: module list + thread list + thread stacks; no full memory).
++REXCVAR_DEFINE_STRING(round30_minidump_dir, "", "Debug",
++                      "Directory for Round-30 fault-loop minidumps (empty = "
++                      "%TEMP%\\worldcup2010_minidumps).");
++REXCVAR_DEFINE_UINT32(round30_minidump_max_mb, 256, "Debug",
++                      "Size cap for a Round-30 fault-loop minidump in MiB (0 = no cap). The dump is "
++                      "abandoned if it would exceed the cap or if free space is below cap + 64 MiB.");
++
+ // ---------------------------------------------------------------------------
+ // ROUND28_HUNK_B off switch: compile with -DROUND28_HUNK_B=0 to remove the full
+ // guest-context dump added for the throw-in crash investigation.
+@@ -53,13 +63,253 @@ REXCVAR_DEFINE_BOOL(guest_present_interval_log, false, "GPU",
+ #define ROUND28_HUNK_B 1
+ #endif
+ 
++// ---------------------------------------------------------------------------
++// ROUND30_FIX off switch: compile with -DROUND30_FIX=0 to restore the exact
++// Round-28 behaviour.  With it on, the access-violation dump can no longer fault
++// itself and the diagnostic cannot loop:
++//   (a) every dump checks *host* page protection before reading guest memory
++//       (the low 64 KiB is committed PAGE_NOACCESS, so the Round-28 dump's own
++//       read of guest 5 faulted inside the vectored exception handler; Windows
++//       re-entered the handler and the fault repeated 14,284 times);
++//   (b) the same guest register context seen three times in a row on one thread
++//       is reported as a stuck diagnostic and the process is terminated instead
++//       of recursing until the 16 MiB thread stack is exhausted;
++//   (c) duplicate context blocks are rate-limited after the third repeat;
++//   (d) the guest code bytes around LR are included, because LR is the last
++//       call's return address, not the faulting instruction;
++//   (e) the owner chain and its table pointers (r3 -> table, r8, r29, r31) are
++//       dumped.
++//   (f) Round 31: also dump G = *(r29+0x2C) (the getter's return), *(G+0x1C)
++//       and the first words of the objects G points at; the minidump goes to a
++//       cvar-chosen directory with a size cap and a free-space check.
++// ROUND30_MINIDUMP writes a minidump before the fault-loop termination.
++// ---------------------------------------------------------------------------
++#ifndef ROUND30_FIX
++#define ROUND30_FIX 1
++#endif
++#ifndef ROUND30_MINIDUMP
++#define ROUND30_MINIDUMP 1
++#endif
++
++#if ROUND30_FIX
++#if defined(_WIN32)
++#include <windows.h>
++#endif
++#if ROUND30_MINIDUMP && defined(_WIN32)
++#include <dbghelp.h>
++#pragma comment(lib, "dbghelp.lib")
++#endif
++#endif
++
+ namespace rex::runtime {
+ 
+ namespace {
+ 
++#if ROUND28_HUNK_B && ROUND30_FIX
++// Round 30.  A committed guest page is not necessarily readable: Memory::Initialize
++// commits the low 64 KiB with kMemoryProtectNoAccess (protect_zero), so the Round-28
++// dump's own read of guest address 5 faulted *inside* the vectored exception handler.
++// Every diagnostic read below is therefore conditional on host page protection.
++bool Round30HostReadable(const void* host, size_t length) {
++#if defined(_WIN32)
++  uintptr_t p = reinterpret_cast<uintptr_t>(host);
++  const uintptr_t end = p + length;
++  if (end < p) {
++    return false;
++  }
++  while (p < end) {
++    MEMORY_BASIC_INFORMATION mbi{};
++    if (::VirtualQuery(reinterpret_cast<const void*>(p), &mbi, sizeof(mbi)) != sizeof(mbi)) {
++      return false;
++    }
++    if (mbi.State != MEM_COMMIT) {
++      return false;
++    }
++    if ((mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) {
++      return false;
++    }
++    const uintptr_t region_end = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
++    if (region_end <= p) {
++      return false;
++    }
++    p = region_end;
++  }
++  return true;
++#else
++  (void)host;
++  (void)length;
++  return false;
++#endif
++}
++
++bool Round30ReadU32(::rex::memory::Memory* mem, uint32_t guest, uint32_t* out) {
++  if (!mem || !out) {
++    return false;
++  }
++  const uint8_t* p = mem->TranslateVirtual(guest);
++  if (!Round30HostReadable(p, sizeof(uint32_t))) {
++    return false;
++  }
++  *out = (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | uint32_t(p[3]);
++  return true;
++}
++
++// Hex dump of `count` big-endian words, used for the object/table chain.
++void Round30DumpWords(::rex::memory::Memory* mem, const char* tag, uint32_t guest, uint32_t count) {
++  if (!mem) {
++    return;
++  }
++  const uint32_t bytes = count * 4;
++  const uint8_t* p = mem->TranslateVirtual(guest);
++  if (!Round30HostReadable(p, bytes)) {
++    REXCPU_ERROR("    [{}] 0x{:08X} (host page not readable; not dumped)", tag, guest);
++    return;
++  }
++  std::string text;
++  for (uint32_t i = 0; i < bytes; i += 16) {
++    if (i) {
++      text += "\n";
++    }
++    text += fmt::format("      {:08X}:", guest + i);
++    for (uint32_t j = 0; j < 16 && (i + j) < bytes; j += 4) {
++      text += fmt::format(" {:08X}",
++                          (uint32_t(p[i + j]) << 24) | (uint32_t(p[i + j + 1]) << 16) |
++                              (uint32_t(p[i + j + 2]) << 8) | uint32_t(p[i + j + 3]));
++    }
++  }
++  REXCPU_ERROR("    [{}] 0x{:08X}\n{}", tag, guest, text);
++}
++
++// LR is the return address of the last call, not the instruction that faulted
++// (0x8333915C vs 0x8333916C in worldcup2010_023).  Dump the code around it so the
++// faulting instruction sequence is in the log even without the guest image.
++void Round30DumpCode(::rex::memory::Memory* mem, uint32_t lr) {
++  if (!mem) {
++    return;
++  }
++  const uint32_t start = lr >= 0x10 ? lr - 0x10 : 0;
++  const uint8_t* p = mem->TranslateVirtual(start);
++  if (!Round30HostReadable(p, 0x60)) {
++    REXCPU_ERROR("    [code around LR] 0x{:08X} (host page not readable; not dumped)", start);
++    return;
++  }
++  std::string text;
++  for (uint32_t i = 0; i < 0x60; i += 16) {
++    if (i) {
++      text += "\n";
++    }
++    text += fmt::format("      {:08X}:", start + i);
++    for (uint32_t j = 0; j < 16; j += 4) {
++      text += fmt::format(" {:08X}",
++                          (uint32_t(p[i + j]) << 24) | (uint32_t(p[i + j + 1]) << 16) |
++                              (uint32_t(p[i + j + 2]) << 8) | uint32_t(p[i + j + 3]));
++    }
++  }
++  REXCPU_ERROR("    [code around LR={:08X}]\n{}", lr, text);
++}
++
++#if defined(_WIN32)
++// MiniDumpWriteDump IO callback: aborts the dump once it exceeds the cap.
++struct Round30DumpLimit {
++  uint64_t written = 0;
++  uint64_t cap = 0;
++};
++BOOL CALLBACK Round30DumpIoCallback(void* param, const PMINIDUMP_CALLBACK_INPUT input,
++                                    PMINIDUMP_CALLBACK_OUTPUT output) {
++  auto* limit = static_cast<Round30DumpLimit*>(param);
++  if (!limit || !input || !output) {
++    return FALSE;
++  }
++  switch (input->CallbackType) {
++    case IoStartCallback:
++      limit->written = 0;
++      return TRUE;
++    case IoWriteAllCallback:
++      limit->written += input->Io.BufferBytes;
++      if (limit->cap && limit->written > limit->cap) {
++        // Ask dbghelp to stop.  dbghelp may still finish the write, so the file
++        // size is checked again after MiniDumpWriteDump returns.
++        output->Cancel = TRUE;
++      }
++      return TRUE;
++    default:
++      return TRUE;
++  }
++}
++#endif
++
++void Round30WriteMinidump() {
++#if ROUND30_MINIDUMP && defined(_WIN32)
++  const uint32_t cap_mb = rex::cvar::Query<uint32_t>("round30_minidump_max_mb");
++  const std::string configured = rex::cvar::Query<std::string>("round30_minidump_dir");
++  wchar_t dir[MAX_PATH]{};
++  if (configured.empty()) {
++    wchar_t temp_path[MAX_PATH]{};
++    if (!::GetTempPathW(MAX_PATH, temp_path)) {
++      return;
++    }
++    ::swprintf_s(dir, L"%sworldcup2010_minidumps", temp_path);
++  } else if (::MultiByteToWideChar(CP_UTF8, 0, configured.c_str(), -1, dir, MAX_PATH) <= 0) {
++    return;
++  }
++  if (!dir[0]) {
++    return;
++  }
++  ::CreateDirectoryW(dir, nullptr);  // fine if it already exists
++
++  // Never fill the user's disk with a crash artefact.
++  ULARGE_INTEGER free_bytes{};
++  const uint64_t need = (static_cast<uint64_t>(cap_mb) + 64ull) * 1024ull * 1024ull;
++  if (!::GetDiskFreeSpaceExW(dir, &free_bytes, nullptr, nullptr)) {
++    REXCPU_ERROR("ROUND30 minidump skipped: cannot query free space for the dump directory");
++    return;
++  }
++  if (free_bytes.QuadPart < need) {
++    REXCPU_ERROR("ROUND30 minidump skipped: only {} MiB free, need {} MiB",
++                 free_bytes.QuadPart / (1024ull * 1024ull), need / (1024ull * 1024ull));
++    return;
++  }
++
++  wchar_t path[MAX_PATH]{};
++  ::swprintf_s(path, L"%s\\worldcup2010_r30_%lu_%llu.dmp", dir,
++               static_cast<unsigned long>(::GetCurrentProcessId()),
++               static_cast<unsigned long long>(::GetTickCount64()));
++  HANDLE file = ::CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
++                              FILE_ATTRIBUTE_NORMAL, nullptr);
++  if (file == INVALID_HANDLE_VALUE) {
++    REXCPU_ERROR("ROUND30 minidump skipped: cannot create the dump file");
++    return;
++  }
++  Round30DumpLimit limit;
++  limit.cap = static_cast<uint64_t>(cap_mb) * 1024ull * 1024ull;
++  MINIDUMP_CALLBACK_INFORMATION callback{};
++  callback.CallbackRoutine = Round30DumpIoCallback;
++  callback.CallbackParam = &limit;
++  // MiniDumpNormal = module list + thread list + thread stacks; no full memory.
++  const BOOL ok = ::MiniDumpWriteDump(::GetCurrentProcess(), ::GetCurrentProcessId(), file,
++                                      MiniDumpNormal, nullptr, nullptr, &callback);
++  LARGE_INTEGER size{};
++  const bool got_size = ::GetFileSizeEx(file, &size) != 0;
++  ::CloseHandle(file);
++  const bool over_cap =
++      limit.cap && got_size && static_cast<uint64_t>(size.QuadPart) > limit.cap;
++  if (!ok || over_cap) {
++    ::DeleteFileW(path);
++    REXCPU_ERROR("ROUND30 minidump abandoned (cap {} MiB, reached {} MiB)", cap_mb,
++                 limit.written / (1024ull * 1024ull));
++    return;
++  }
++  char narrow[MAX_PATH * 3]{};
++  ::WideCharToMultiByte(CP_UTF8, 0, path, -1, narrow, sizeof(narrow), nullptr, nullptr);
++  REXCPU_ERROR("ROUND30 minidump written: {} ({} KiB, cap {} MiB)", narrow,
++               limit.written / 1024ull, cap_mb);
++#endif
++}
++#endif  // ROUND28_HUNK_B && ROUND30_FIX
++
+ #if ROUND28_HUNK_B
+-// Dumps 64 bytes of guest memory at `guest`, but only after confirming the region
+-// is committed, so the fatal path cannot take a second fault while reporting.
++// Dumps 64 bytes of guest memory at `guest`.  Committed is not enough: the page
++// must also be readable in the host (see Round30HostReadable above / ROUND30_FIX).
+ void Round28DumpBytes(::rex::memory::Memory* mem, const char* tag, uint32_t guest) {
+   if (!mem) {
+     REXCPU_ERROR("    [{}] 0x{:08X} (no memory object)", tag, guest);
+@@ -75,6 +325,12 @@ void Round28DumpBytes(::rex::memory::Memory* mem, const char* tag, uint32_t gues
+   }
+   const uint8_t* p = mem->TranslateVirtual(guest);
+   const uint32_t n = 64;
++#if ROUND30_FIX
++  if (!Round30HostReadable(p, n)) {
++    REXCPU_ERROR("    [{}] 0x{:08X} (host page not readable; not dumped)", tag, guest);
++    return;
++  }
++#endif
+   std::string text;
+   for (uint32_t i = 0; i < n; i += 16) {
+     text += fmt::format("      {:08X}: ", guest + i);
+@@ -98,6 +354,12 @@ void Round28DumpRegAndPointee(::rex::memory::Memory* mem, const char* tag, uint3
+   if (value && heap && heap->QueryRegionInfo(value, &info) &&
+       (info.state & ::rex::memory::kMemoryAllocationCommit)) {
+     const uint8_t* p = mem->TranslateVirtual(value);
++#if ROUND30_FIX
++    if (!Round30HostReadable(p, sizeof(uint32_t))) {
++      REXCPU_ERROR("    [{}->*] (host page not readable; not dumped)", tag);
++      return;
++    }
++#endif
+     const uint32_t pointee =
+         (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | uint32_t(p[3]);
+     Round28DumpBytes(mem, (std::string(tag) + "->*").c_str(), pointee);
+@@ -272,6 +534,56 @@ void Round28DumpGuestContext(PPCContext& ctx, const char* why) {
+       &ctx.r8,  &ctx.r9,  &ctx.r10, &ctx.r11, &ctx.r12, &ctx.r13, &ctx.r14, &ctx.r15,
+       &ctx.r16, &ctx.r17, &ctx.r18, &ctx.r19, &ctx.r20, &ctx.r21, &ctx.r22, &ctx.r23,
+       &ctx.r24, &ctx.r25, &ctx.r26, &ctx.r27, &ctx.r28, &ctx.r29, &ctx.r30, &ctx.r31};
++
++#if ROUND30_FIX
++  // Fault-loop guard.  Windows re-enters the vectored exception handler when the
++  // handler itself faults, so one guest fault becomes an unbounded recursion
++  // (14,284 levels in worldcup2010_023, each holding the process-global memory
++  // critical region).  No guest code runs between levels, so the guest context is
++  // identical every time: three identical contexts in a row on one thread is
++  // proof of a stuck diagnostic.  Repetitions 1 and 2 dump (they are the useful
++  // ones); repetition 3 reports, writes a minidump and terminates the process.
++  uint64_t context_hash = 1469598103934665603ull;
++  for (int i = 0; i < 32; ++i) {
++    context_hash ^= static_cast<uint64_t>(gprs[i]->u64);
++    context_hash *= 1099511628211ull;
++  }
++  context_hash ^= static_cast<uint64_t>(ctx.lr);
++  context_hash *= 1099511628211ull;
++  context_hash ^= static_cast<uint64_t>(ctx.ctr.u64);
++  context_hash *= 1099511628211ull;
++
++  static thread_local uint64_t t_last_context_hash = 0;
++  static thread_local uint32_t t_identical_contexts = 0;
++  if (context_hash == t_last_context_hash) {
++    ++t_identical_contexts;
++  } else {
++    t_last_context_hash = context_hash;
++    t_identical_contexts = 1;
++  }
++  if (t_identical_contexts >= 3) {
++    const uint32_t loop_fn = dispatcher ? dispatcher->FindContainingFunctionStart(lr) : 0;
++    REXCPU_ERROR(
++        "ROUND30 fault loop: the same guest register context faulted {} times in a row on this "
++        "thread; the faulting instruction never completes and every repetition holds the memory "
++        "critical region, so the process is stalled.  Guest function 0x{:08X} (+0x{:X} from "
++        "LR=0x{:08X}; LR is the last call's return address, not the faulting instruction).  "
++        "r3=0x{:08X} r8=0x{:08X} r9=0x{:08X} r29=0x{:08X} r31=0x{:08X}.  Terminating the "
++        "process to stop the loop.",
++        t_identical_contexts, loop_fn, lr - loop_fn, lr, static_cast<uint32_t>(ctx.r3.u64),
++        static_cast<uint32_t>(ctx.r8.u64), static_cast<uint32_t>(ctx.r9.u64),
++        static_cast<uint32_t>(ctx.r29.u64), static_cast<uint32_t>(ctx.r31.u64));
++    Round30WriteMinidump();
++    ::TerminateProcess(::GetCurrentProcess(), 0x52300001u);
++    return;
++  }
++  if (t_identical_contexts == 2) {
++    REXCPU_ERROR(
++        "ROUND30 fault repeated with an identical guest context: the handler's own diagnostic "
++        "faulted (repeat 2 of 3).  The next identical context terminates the process.");
++  }
++#endif
++
+   std::string gpr;
+   for (int i = 0; i < 32; ++i) {
+     gpr += fmt::format("r{}={:08X} ", i, static_cast<uint32_t>(gprs[i]->u64));
+@@ -295,12 +607,83 @@ void Round28DumpGuestContext(PPCContext& ctx, const char* why) {
+     REXCPU_ERROR("ROUND28 LR function: dispatcher unavailable");
+   }
+ 
++#if ROUND30_FIX
++  // LR is the last call's return address (0x8333915C), not the faulting
++  // instruction (0x8333916C); include the code bytes so the sequence is visible.
++  Round30DumpCode(mem, lr);
++#endif
++
+   Round28DumpRegAndPointee(mem, "r3", static_cast<uint32_t>(ctx.r3.u64));
+   Round28DumpRegAndPointee(mem, "r8", static_cast<uint32_t>(ctx.r8.u64));
+   Round28DumpRegAndPointee(mem, "r9", static_cast<uint32_t>(ctx.r9.u64));
+   Round28DumpRegAndPointee(mem, "r11", static_cast<uint32_t>(ctx.r11.u64));
++  Round28DumpRegAndPointee(mem, "r29", static_cast<uint32_t>(ctx.r29.u64));
+   Round28DumpRegAndPointee(mem, "r30", static_cast<uint32_t>(ctx.r30.u64));
+   Round28DumpRegAndPointee(mem, "r31", static_cast<uint32_t>(ctx.r31.u64));
++
++#if ROUND30_FIX
++  // Round 31 object/table chain (every read page-checked).
++  //
++  // The virtual call at 0x83339144..0x83339158 passes r3 = r29 ("mr r3,r29",
++  // generated worldcup2010_recomp.255.cpp:25407), so the callee is
++  // sub_836D1540 = "lwz r3,0x2C(r3); blr" and G = *(r29 + 0x2C).  The caller
++  // then did r9 = *(G + 0x1C) (= 5 in the 023 run) and the faulting load was
++  // *(r9 + 0x1C) = *(0x21).  Dump the whole chain, not just r29.
++  const uint32_t owner = static_cast<uint32_t>(ctx.r29.u64);
++  Round30DumpWords(mem, "r29 object", owner, 24);
++  uint32_t g = 0;
++  if (Round30ReadU32(mem, owner + 0x2C, &g) && g) {
++    REXCPU_ERROR("    [G = *(r29+0x2C) via sub_836D1540] 0x{:08X}", g);
++    Round30DumpWords(mem, "G (64 bytes)", g, 16);
++    uint32_t g_1c = 0;
++    if (Round30ReadU32(mem, g + 0x1C, &g_1c)) {
++      REXCPU_ERROR("    [*(G+0x1C) = r9] 0x{:08X} (the faulting load used it as a pointer)",
++                   g_1c);
++      if (g_1c >= 0x10000u) {
++        Round30DumpWords(mem, "*(G+0x1C) object", g_1c, 16);
++        uint32_t g_1c_1c = 0;
++        if (Round30ReadU32(mem, g_1c + 0x1C, &g_1c_1c)) {
++          REXCPU_ERROR("    [*(*(G+0x1C)+0x1C)] 0x{:08X} (the value the guest load faulted on)",
++                       g_1c_1c);
++        }
++      }
++    }
++    // First words of the objects G points at (bounded, de-duplicated).
++    uint32_t seen[4] = {0, 0, 0, 0};
++    uint32_t dumped = 0;
++    for (uint32_t i = 0; i < 16 && dumped < 4; i += 4) {
++      uint32_t word = 0;
++      if (!Round30ReadU32(mem, g + i, &word)) {
++        continue;
++      }
++      if (word < 0x30000000u || word >= 0xC0000000u) {
++        continue;  // not a plausible guest pointer
++      }
++      bool duplicate = false;
++      for (uint32_t s = 0; s < 4; ++s) {
++        if (seen[s] == word) {
++          duplicate = true;
++        }
++      }
++      if (duplicate) {
++        continue;
++      }
++      seen[dumped] = word;
++      Round30DumpWords(mem, fmt::format("G+0x{:X} object", i).c_str(), word, 8);
++      ++dumped;
++    }
++  }
++  // The registry table that r3->* and r8+8 both point at (0xB8D219B0 in 023).
++  uint32_t table = 0;
++  if (Round30ReadU32(mem, static_cast<uint32_t>(ctx.r3.u64), &table)) {
++    Round30DumpWords(mem, "r3->*[table]", table, 24);
++    uint32_t owner_table = 0;
++    if (Round30ReadU32(mem, static_cast<uint32_t>(ctx.r8.u64) + 8, &owner_table) &&
++        owner_table != table) {
++      Round30DumpWords(mem, "r8+8[table]", owner_table, 24);
++    }
++  }
++#endif
+ }
+ #endif  // ROUND28_HUNK_B
+ 

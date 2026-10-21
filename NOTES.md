@@ -1,164 +1,165 @@
 # 2010 FIFA World Cup South Africa – PC Port Notes
 
-## Current State (2026-10-17, after Round 23) - one page
+## Current State (2026-10-19, after Round 32) - one page
 
-**One line.** The port boots, loads both XEXs, runs ~48 s, then dies on a *new* unregistered
-indirect-call target `0x836A24B0` (a 4-instruction tail fragment); the first-boot crash at
-`0x83884CA0` is resolved by the override, and the original `0x0006C6B8` null-field read is
-tolerated by the temporary on-demand guest-virtual commit workaround (one page committed). The
-game loads menus, processes XAM/XContent, starts APU/GPU, then stops on the vtable call to
-`0x836A24B0`.
-~3.3 s) and reach a *different* wall: an indirect call to unrecompiled guest `0x83884CA0` ->
-`[FATAL] Call to invalid or unregistered function` (exit `0xC0000409`). Round 21's causal story
-("a fault in Xenia's virtual heap walks the guest page table and lazily commits the page, 3x per run")
-is **retracted**: Xenia's `AccessViolationCallback` has the *same* `!= kGuestPhysical` early-out
-(so it cannot commit a virtual page), and those 3 lines are Xenia kernel-init allocation lines
-logged next to `Added handle:F8000000 for class xe::kernel::XObject`, not the guest read. Why Xenia
-has that page committed is still **UNKNOWN**; the on-demand commit is a behavioural approximation of
-Xenia's *observable* result (the guest reads 0), not a copy of a Xenia code path. So the stop is still
-not a missing guest function, not a value divergence and not an override - but the *next* blocker
-after the page fix is a missing recompiled function (`0x83884CA0`). Round 17's `r3 != 0` claim remains
-retracted (Round 21).
+> **Round 32 update (2026-10-19, applied + built + boot-tested).** The 15:13 crash
+> (`worldcup2010_025.log`, 58,141 B, 392 lines) is **classification (A): a genuine one-off guest
+> fault**, confirmed independently by WER (`Application` event 1000 at 15:13:04: faulting module
+> `worldcup2010_fifadllzf.DLL`, code `0xc0000005`, offset `0x5992b2f`; WER minidump
+> `CrashDumps\worldcup2010.exe.13020.dmp`, exception record thread 27348, address
+> `0x7FFCA40F2B2F`, read of `0x100000021`). **Root cause: our own Round-14 Tier-1 override
+> `"8323FB38" = { end = 0x8323FB48 }` truncates the QueryInterface chain of the 288-byte animation
+> class after its first `beqlr`, so the generated body returns `this` for every tag. The
+> caller's `QI(0xA6C60698)` therefore passes its null check and applies a foreign object layout,
+> faulting at guest `0x8333916C` (`lwz r5,0x1C(r9)`, `r9 = 5`). The full chain's default is
+> `li r3,0; blr` (return null), and the caller has a proper `if (r29==0) skip` path.
+> **Fix applied:** strong-symbol override `sub_8323FB38` in the project sources (patches
+> `round32-1` C15455D2 + `round32-2` 9E96A227), one incremental rebuild `BUILD_EXIT_CODE=0`
+> (DLL 123,055,616 B, SHA-256 `502744EE...`; mapping entry `0x8323FB38 -> 0x18719C580`; thunk
+> `0x8323FBD8` -> the same address). **152 s title-screen boot:** `worldcup2010_026.log`,
+> 47,613 B / 282 lines, exactly **one** `ROUND32 QI ... tag=0xA6C60698 self=0xBE2A6CE0 -> null`,
+> and **no** `Null-page access` / `Unhandled guest access violation` / `ROUND28 guest context` /
+> `FATAL`. **Throw-in test still to be run by the user.** Corrections: the three `8323FB38/6C/8C`
+> tier-1 entries are **not standalone stubs**; the Round-14 validator treated `beqlr` as a
+> terminator (`8323FB38` and `8323FB6C` truncated; `8323FB8C` is complete). A deeper
+> reachability pass also found 10 extents whose interior branch targets `end` (split functions);
+> all 10 targets are registered and tail-called, so they are config-incomplete but not the same
+> semantic defect. G's primary vptr is
+> `0x825218B8` (`0x825218A4` is the `+0x14` secondary). Details in `# Round 32` §8 below.
+> **Not pushed; no deletions; `ReXGlue/` read only.**
 
-Evidence, corrections and dead ends from Rounds 7-11 are archived in
-[`NOTES_archive.md`](NOTES_archive.md); this file keeps the stages, this summary and Round 12.
+> **Round 31 update (2026-10-19).** The three Round-30 patches were **applied and built**
+> (`patches\round30-1..3`; patch 1 `595C2377...`, 2 `48230F60...`, 3 `B8A0F761...`), with the
+> requested additions: the fault block now also dumps `r29`, `G = *(r29+0x2C)` (the getter's return),
+> `*(G+0x1C)` and the objects G points at; the minidump is `MiniDumpNormal` with a size cap and a
+> free-space check, written to the `round30_minidump_dir` cvar (default
+> `%TEMP%\worldcup2010_minidumps`, cap `round30_minidump_max_mb` = 256 MiB); the third identical
+> context still exits with `0x52300001`. **One rebuild: `BUILD_EXIT_CODE=0`** (`rexruntime.dll`
+> 10,216,960 B). **152 s title-screen boot, no match:** the game ran to the kill point, **one log
+> file, 48,269 B, 284 lines** (Round 29: 4 files / 16,439,480 B), sign-in lines **4** (was 126,928),
+> no guest fault, no fault loop, no minidump; 67 `ROUND30 exception: host RIP` lines are benign
+> first-chance exceptions from one large system/driver DLL (not identified by name). Static work: `sub_836D1540` returns
+> `*(this+0x2C)`; that field is the **owner pointer stored by the base constructor**
+> (`sub_8323FA88`), G's class is the class with **primary** vtable `0x825218B8` (secondary
+> `0x825218A4` at `+0x14`; corrected in Round 32), and **G+0x1C is an array element
+> count** (`sub_83233D90`), so `*(G+0x1C)=5` is "five elements", used by the caller as a pointer -
+> a guest object-graph defect, not a mapping problem. Details in `# Round 31` below.
 
-**Verified (measured, reproducible)**
-- Host<->guest translation is `host = base + guest` with `base` = a runtime-allocated, 4 GB-aligned
-  guest memory base: `0x1_0000_0000` in every run logged except one, which used `0x2_0000_0000`
-  (VERIFIED from the runtime's own AV line, 30+ occurrences:
-  `read of guest 0x0006C6B8 (host 0x000000010006C6B8)`); the generated macro is
-  `REX_LOAD_U32(x) = bswap32(*(u32*)(base + (u32)x + REX_PHYS_HOST_OFFSET(x)))` with
-  `REX_PHYS_HOST_OFFSET(a) = (a >= 0xE0000000) ? 0x1000 : 0` (VERIFIED in `codegen_pch_h.inja.h`).
-  Debugger guest reads must be byte-swapped (`bswap32`).
-  A "`host = guest + 0x8000_0000`" rule was briefly written here in Round 13 - **withdrawn**, see
-  Round 14 item 0. The mirror value `0x83A4648C -> 0x103A4648C` is UNVERIFIED (a hypothesis about a
-  masked 0x80000000 window that no log or macro supports; the generated code does not mask).
-- Singleton object at `0xBF3C57D0` (deterministic). Ctor `sub_82C50EF0`; publish
-  `sub_82C6AFC8+0xF4`; populate `sub_82CA1138` writes `+0x08/+0x0C/+0x10`; `+0x00 = obj-8`;
-  `+0x64` stays `0`.
-- Complete `+0x64` write history, all runs/threads: **3 stores, all before the read** (memset-zero,
-  memset-poison `0xCDCDCDCD`, ctor-zero). A valid pointer is never stored.
-- The 83 no-block stubs (Round 14): **71 leaf / 12 epilogue-tail-fragment**; **14 are reached by a
-  real call** (`sub_X(ctx, base)` emitted), **69 only by `goto loc_X`** (their body is already
-  emitted inside the caller, so the empty stub is dead weight); none reads an incoming non-volatile;
-  4 have a CFG extent that contains a sibling entry (all 4 in the harmless set). Execute breakpoints
-  must use the `PPCFuncMappings` host pointers, never `guest + base` (exe base `0x140000000`, dll base
-  `0x180000000`); no ICF folding of any sampled stub (24/24 distinct host pointers).
-  **Round 15 applied the 14 called ones** (Tier 1, with CFG-validated exclusive `end`s); the no-block
-  count fell **83 -> 69** and the 69 left are exactly the 65 Tier-2 + 4 Tier-3. **The AV is unchanged.**
-- Fault chain: `sub_82CBD7E0` -> `sub_82C501D0` (`r3 = *(0x83A4648C)`) -> `sub_832BF128`
-  (`r3 = *(r3+100)`) -> `lwzx r28,r3,r11` with `r11 = 0x6C6B8`; AV = read of guest `0x6C6B8` on the
-  **FEThread (guest 26)**, 0-1 ms after it names thread 35.
-- **Round 17 - RETRACTED by Round 21: Xenia does execute `0x82CBD80C`, but its `r3` there is 0.**
-  The firing counts still stand (`break_on_instruction = 0x82CBD80C` = **5,029 int3 in 100 s** and
-  **3,674 int3 in the 80 s control**, ~46-50/s, first hit 15.4/16.9 s in, one host thread, the C
-  run's first hit just after `SetThreadName(35, ...)`), but the *conclusion drawn from the condition
-  run was wrong*: the conditional path (`break_condition_gpr >= 0`) does **not** emit an int3 - it
-  compiles to `CallNative(TrapDebugBreak)`, which only logs
-  `tw/td forced trap hit! This should be a crash!` (and int3s only when `break_on_debugbreak` is
-  true, which Round 17 turned **off** in the copy). So "condition run = 0 int3" measured nothing.
-  Re-read with the correct oracle, that same run B log holds **3,618 forced-trap lines**, i.e.
-  `r3 == 0` was **true** at every execution - the opposite of what the bullet used to claim. Round 21
-  reproduces it in both directions: `r11 == 0x6C6B8` (provably true at that instruction) -> **3,873**
-  trap hits; `r3 != 0` -> **0**. See Round 21 for the source citations and the resolution.
-- **Round 18: the accessor setter is dead, and the init order is ctor/publish once each.** `0x82BDB2F8`
-  (the bare `+0x64` setter the accessor table pairs with the getter) is **never executed by Xenia**
-  - 0 hits in an 80 s armed run and **0 direct branch sites** in the image (two independent methods).
-  The ctor `0x82C50EF0` and the publish `0x82C6AFC8` each execute **exactly once**, before worker 35
-  exists; statics prove `0x82C6AFC8` allocates 0xC4 bytes, `bl 0x82C50EF0` at +0x28, then
-  `stw r3, 25740(r11)` with `r11 = 0x83A40000` - i.e. the singleton global `0x83A4648C`. The getter
-  and `0x82CBD80C` run ~58/s starting **after** the naming and the worker's first
-  `RtlInitializeCriticalSection` (reproduced in 3 runs). So the `+0x64` writer is not reachable
-  through the accessor table, and the field is already valid when the FEThread's per-frame path
-  reads it - the writer is still unidentified (Round 18).
-- **Round 20 (1 Xenia batch = 4 x 80 s on the copy + 1 run of our build; no rebuild, no override
-  change): the "producer" story fails on measurement.** In Xenia, armed on `0x82C9A4B0`
-  (`break_on_instruction` = 2194252976, read back) the producer **never executes** in 80 s (**0
-  int3 in the whole process**), while in the same batch `sub_82D03C90` fires **6x** (all guest
-  thread 26/FEThread, first at log line 10910 = +4905 from thid26, i.e. *before* the control run's
-  first `0x82CBD80C` read at +5206), `sub_82D1F100` fires **2x** (guest 26, line 12955 = +6860,
-  *after* the read) and `sub_82D22390` fires **30,670x** (30,667x guest 26/FEThread + 3x guest
-  6/Main XThread, first at line 9105 = +3029). Host tids were mapped to guest threads through the
-  run's own `XThread::Execute ... native=` lines. The instruction that kills our port, `0x82CBD80C`,
-  is executed by **guest thread 26 (FEThread)** in Xenia (control run: host tid 13956 = native
-  0x3684 = `XThread::Execute thid 26`). Our build, DR0..DR3 execute breakpoints on the four host
-  entries resolved **at runtime from the module's own `PPCFuncMappings`** (base + rva `0x7313000`,
-  87,183 entries read): **0 hits for all four before the AV**; the AV is the runtime's own
-  `Unhandled guest access violation: read of guest 0x0006C6B8 (host 0x000000010006C6B8)`, 3.26 s
-  in, guest handle 0xF8000354. So no A/B/ROOT/producer code runs before our fault, **and in Xenia
-  the `+0x64` value is not established by the producer either**. Round 19's "the writer is
-  identified" is therefore **not confirmed by execution** - the Round 20 section records the
-  contradiction and the two surviving explanations.
-- **Round 20 item 1: the `+0x18`-state / `+0x23`-gate object is *not* the singleton - it is a
-  separate polymorphic manager.** The object is 0x44 = 68 bytes, built by ctor **`0x82D041B8`**
-  (`alloc(68,0,"rw45 tag")` + `stw r9,0(r3)` at `0x82D17CC4`, i.e. vptr `0x8244CE04`) inside the
-  factory **`sub_82D17A50`**; its sibling 0x80-byte object (ctor `0x82D04048`, vptr `0x8244CDFC`)
-  has the identical state/gate field layout. The singleton is the 0xC4-byte **POD** built by
-  `0x82C50EF0` (`addi r11,0; stw r11,0..0xC0(r3)`, no vptr store at all). `sub_82D22390` (ROOT) is
-  that manager's **virtual command dispatcher** - case `r4==1` initialises exactly this layout
-  (`+0x18=0, +0x1C=3, +0x20..0x22=0, +0x23=1` gate armed, `+0x24=-1, +0x28=-1, +0x2C=0`). Item 4:
-  `.rdata 0x8244CE10` is the manager's **vtable slot** (vtable `0x8244CE04`, ROOT at `+0x0C`);
-  `.rdata 0x82607418` is **not** a dispatch vector - it is ROOT's own entry in the guest's static
-  function-extent table (`{code ptr, 0x4000_0000|(ninstr<<8)|flags}`), i.e. constant .rdata.
-- **Round 19 (static only, no runs): the writer is identified - `sub_82C9A4B0`.** It is a plain `new`
-  block: `alloc(0x6C6D0, 0, "rw45 tag")` at `0x82C9A4E0`, `bl 0x82C8D278` (the ctor, returns `this`)
-  at `0x82C9A4EC`, then **`stw r3, 100(r31)` at `0x82C9A4F8`** with `r31 = this` (set by `mr r31,r3`
-  on entry). Its only two callers (`0x82D03D4C` in `sub_82D03C90`, `0x82D1F234` in `sub_82D1F100`) both
-  do `bl 0x82C501D0` - the **singleton getter** - immediately before, so the store target is provably
-  `*(0x83A4648C) + 0x64`. `0x6C6D0 = 0x6C6B8 + 0x18` and it is the **only** allocation in either
-  image in `0x6C600..0x6C800`, i.e. the object's last field is exactly the `+0x6C6B8` element count
-  that the faulting `lwzx` reads (`+4` is the array base pointer, stride 8144, per the decoded
-  accessors `sub_82C71858` / `sub_82C71740`; the bare setter `0x82C718D0` writes the count). Our
-  build's DR write history of `+0x64` (3 stores, all zero/poison - the `alloc-failed` arm of the same
-  block would still be a 4th store) says the call never happens here. The call is gated by
-  `state == 8` at `0x82D03CD8` plus the one-shot byte `this+0x23` at `0x82D03D1C`, and the chain's root
-  `sub_82D22390` has **0 `bl` callers** (entered only via `.rdata` `0x8244CE10` / `0x82607418`).
-  Which of those guards excludes our build is the one thing still OPEN (needs a run or the GUI words).
-- Thread 35 is created CREATE_SUSPENDED, `startup = 0x8282FD10`, `start = 0x828360B8`,
-  `ctx = 0x40103E40`, then named, priority 1, affinity `0x10`, then resumed - identical numbers in
-  Xenia's log and in our runtime's recompiled call site. Its guest address is registered and its
-  name string resolves (`rw45_pkg_factory_seg`); its body writes nothing to `+0x64`.
-- Xenia's thread 35 does exactly: 2 x `KeTlsSetValue`, `ObReference`/`ObDereference`, then
-  **88 x `RtlInitializeCriticalSection`** (stride `0x60`) - and no other kernel call. Xenia's
-  level-3 log contains **no wait calls anywhere** (0/197,511 lines), so its silence about waits is
-  a logging gap, not evidence.
-- Our worker, by contrast, runs ~15.6 ms of guest CPU then parks in a guest wait
-  (`sub_8282DD28+0x19A`, handle `0xF28`, no timeout).
-- cvar surface: `ignore_thread_priorities` (ours **true**; Xenia **false** - the only real
-  difference), `ignore_thread_affinities` (both true), `protect_zero` (both true),
-  `writable_executable_memory` (both true); **`kernel_build_version` and `console_type` do not
-  exist in our runtime at all**. `log_high_frequency_kernel_calls` is defined but never read.
-- 5-run cvar matrix (incl. `--ignore_thread_priorities=false`): the AV is **unchanged** in all of
-  them.
-- Of the 83 "no blocks" stubs: **82 are real PPC code, 1 is code with Xenon VMX128 words, 0 are
-  padding/data**; all 83 are reachable (14 have emitted `sub_XXX(ctx,base)` call sites - Round 14
-  recount; an earlier "22" came from a scan that also counted `goto loc_X` sites) and
-  they are exactly the 83 functions that could not seal (console log: 92,659 `DISCOVERED` vs
-  83 `cannot seal (0 unresolved)`). None sits inside the singleton code, the fault chain, or
-  the worker bodies; none writes `+0x64`.
-  padding/data**. None sits inside the singleton code, the fault chain, or the worker bodies.
-- Both override copies: 266 entries, byte-identical, SHA-256 `FFB03BFC...`.
+> **Round 30 update (2026-10-19, read-only).** The throw-in crash is **our diagnostic looping, not the
+> guest.** In `worldcup2010_023.*` the guest faults **once** at `0x8333916C`
+> (`lwz r5,0x1C(r9)` with `r9=5`); the following **14,284** `Null-page access: guest read of
+> 0x00000005` faults are the Hunk-B dumper reading guest 5 from *inside* the vectored exception
+> handler. Windows re-enters the handler for that new fault, the identical frozen context is printed
+> one frame deeper, the faulting thread keeps the process-global memory critical region, every other
+> guest thread blocks (last non-fault log line `11:14:10.448`, first fault `11:14:10.457`), and the
+> process makes no progress until it is killed. Each level costs ~8.8 ms (the nearest-function lookup
+> rebuilds and sorts 91,164 entries) and ~1.2 KiB of the 16 MiB host stack, so it would eventually
+> have died of stack overflow. Fix proposed, **not applied and not built**: `patches\round30-1..3`
+> (host-protection check in every dump, fault-loop guard + minidump, host-RIP logging, per-user-index
+> sign-in cap), all `git apply --check` OK. **First fault: `worldcup2010_023.7.log:23697`,
+> `2026-10-19 11:14:10.457`, guest read of `0x00000021`.** Details in `# Round 30` below.
 
-**Inferred (not proven)**
-- Leading hypothesis: the `+0x64` assignment is a path that never executes here (narrow variant:
-  the factory must serve a creator request first).
-- Competing hypothesis: the assigner is reached only through an indirect `bctr` dispatch that
-  mis-routes in our build (12 `bctr` sites in `sub_82CBD7E0` alone).
-- The 867-function gap explanation is unverified (see Stage 3/5).
-- The two `0x8370xxxx` stubs near the worker chain are the most interesting of the 83 as candidate
-  silently-returning stubs on the worker's path, but nothing ties them to thread 35 yet.
+> **Round 29 update (2026-10-19).** Round 28 proved the title *enumerates* content for the 32-bit
+> truncated XUID `0x00000000BABEBABE` (0 items) while it *creates* its save under
+> `0xB13EBABEBABEBABE`. Round 29 found the cause: **the truncation is in our own runtime.** The guest
+> really does pass 64 bits - `sub_8319C5D0` does `ld r3,80(r1)` at `0x8319C660` (a full 64-bit load)
+> and `bctrl`s at `0x8319C670` - but `ArgTranslator::GetIntegerArgumentValue` (`include/rex/ppc/
+> function.h`) returns `ctx.r3.u32` for argument 0, so every 64-bit integer argument of every export
+> is zero-extended from 32 bits. **VERIFIED** by guest disassembly + marshaller source + run-time log
+> (`ROUND28C XamContentAggregateCreateEnumerator args xuid=00000000BABEBABE …
+> runtime_xuid=B13EBABEBABEBABE`). Xenia has no such case - its `qword_t` forwards the full register
+> and `xam_content_aggregate.cc:129` only maps the `-1` sentinel.
+> **Applied this round (after a timestamped backup):** 5 per-file diagnostic patches - **D**
+> (narrow XUID shim `Round29ResolveXuid()`: a requested XUID whose **upper 32 bits are zero** and
+> whose **low 32 bits match the profile XUID's low 32 bits** resolves to the profile XUID; used at
+> `XamContentAggregateCreateEnumerator`, `XamContentCreateEnumerator` and `xeXamContentCreate`; every
+> use logged; cvar `round29_xuid_shim`, compile-out `-DROUND29_HUNK_D=0`), plus `XamUserGetXUID` /
+> `XamUserGetSigninInfo` value+caller+read-back tracing, plus a change-only guard on the per-frame
+> `XamUserGetSigninState`. **Hunks A and B untouched.** One rebuild (`BUILD_EXIT_CODE=0`,
+> `rexruntime.dll` 10,187,776 B), one 158 s title-screen boot (`worldcup2010_022.*`).
+> **Result: the save bug is fixed at the enumeration level.** The aggregate enumerator now scans
+> `…\B13EBABEBABEBABE\454108E4\00000001` and returns **8 items** (the 8 `WCSettings0 …` saves); the
+> following `xeXamContentCreate root='rmcsave'` **opens** an existing save
+> (`flags=00000033 disposition=2`) instead of **creating** a new one (`flags=00000034 disposition=1`
+> in Round 28), and **no new save directory was written**. The shim fired only on the
+> `aggregate-enumerator` site (`00000000BABEBABE -> B13EBABEBABEBABE`, `caller=0x8319C674` - exactly
+> the LR predicted statically); the `create-enumerator` and `content-create-data` sites were already
+> correct and logged `unchanged`. **One requirement was NOT met** and is reported as a defect:
+> the change-only guard for `XamUserGetSigninState` did not reduce volume (107,936 of 108,150 lines;
+> 16,439,480 B over 4 files) because the four user indices are polled round-robin and my single
+> `(last index, last value)` slot therefore never matches. The fix is one slot per user index; it
+> needs **one more rebuild** and was not spent this round. Also carried forward and **restated**: the
+> Round-28 crash function `sub_8333D4E0` ends at **`0x8333DCF8`**, not `0x8333DCD0`.
 
-**Open items / next experiments (each needs approval)**
-1. Inverted throttle: 1 ms on / 100 ms off and 2 ms on / 200 ms off, ~3 s, must **not** break on
-   the AV - the only configuration that gives the factory wall time to serve an already-issued
-   request.
-2. Data references to the only `+0x64` setter `sub_82BDB2F8`: does any guest table row point at it?
-3. Resolve the 12 `bctr` sites in `sub_82CBD7E0` through the guest pointer tables.
-4. Counter on host `RtlInitializeCriticalSection` (hardware exec breakpoint or int3) to compare our
-   worker's critical-section count with Xenia's 88 - the decisive same-branch test.
+> **Round 28 update (2026-10-19).** Round 27 leaves the game reaching gameplay; a **hand-played
+> throw-in** then hit a **new** stop (`dist\Output\logs\worldcup2010_019.log`): a null read of guest
+> `0x21` (7 ms earlier, **silently hidden** by the on-demand-commit workaround) and then
+> `INVALID INDIRECT CALL: target=82486704 LR=8333DB7C CTR=82486704 r1=7019E740 r2=00000000
+> r3=BE4545F8 r11=825227F8 r12=8333DB44`. That target is `bcctrl` through `*(*(r30+0x2F8)+0x14)`;
+> `r30` was **not** logged but is recoverable as `0xBE4545F8 - 760 = 0xBE454300`, and `0x82486704`
+> is the literal **`"EASTL basic_string"`**. Static (no Xenia): `0x82486704` has **no** data-word
+> reference in any non-exec section and exactly **one** materialisation site
+> (`0x82F3BFD8 lis r10,0x8248 ; 0x82F3BFE0 addi r10,r10,0x6704`) where it is passed as a **name
+> argument**, never stored at a fixed `object+0x14`; only **2** of the **70** stores to `+0x2F8`
+> install a genuine vtable (`0x823C8460`, `0x8253E2EC`) and **neither** has a data word at `+0x14`.
+> On saves: the static audit showed our store (`C:\Users\ramic\Documents\worldcup2010`) already holds
+> **six** saves under `B13EBABEBABEBABE`, and the boot then **demonstrated the bug**: the game
+> enumerates content for xuid **`0x00000000BABEBABE`** (a 32-bit-truncated copy of our XUID), so
+> `ListContent` scans `…\00000000BABEBABE\…`, which does not exist, and returns **0 items**, while
+> `xeXamContentCreate` writes `rmcsave` under `B13EBABEBABEBABE` - the game never sees its saves.
+> **Applied this round (after a timestamped backup):** 10 per-file diagnostic patches - hunks **A**
+> (null-page access is never committed on demand -> reaches the fatal path, clear log line),
+> **B** (on every invalid indirect call / guest AV: all `r0..r31`, `LR`, `CTR`, the nearest
+> registered function below `LR`, and a bounded page-checked hex dump of `r3,r8,r9,r11,r30,r31` and
+> their pointees), **C** (INFO tracing of the content/user/UI calls, above all the aggregate
+> enumerator's arguments + item count) - one rebuild, one boot. **No override, no XUID change.**
 
----
+> **Round 26 update (the Round-25 block below is kept, but its headline crash is now fixed).**
+> The user approved the **nine-thunk family** `0x837FD0F0..0x837FD170` and withdrew the stale
+> 36-entry batch. Applied to **both** override copies (281 -> 290 entries, byte-identical,
+> `802EE586...` -> `89B6D4D3...`), one rebuild (**607.9 s wall, exit code 0**), all nine `sub_`
+> emitted and registered. **The `0x837FD0F0` crash is gone.** An unattended boot
+> (`worldcup2010_015.log`) now runs **83.1 s** and stops at a **new** address:
+> `INVALID INDIRECT CALL: target=8295FB50 LR=829658CC CTR=8295FB50 r3=BB140E40 r11=8295FB50
+> r12=82969B40`, i.e. **29 s after** the content/save ordinals resolve (Round 25: 2 s). The new
+> target is a 2-instruction tail fragment `li r4,1 ; b 0x8295F988`, immediately before the
+> **already-registered** `li r4,0 ; b 0x8295F988` at `0x8295FB58`; it is the **only** unregistered
+> code pointer in the 15-pair table at `0x823AF8E4..0x823AF95C`. Proposed, **NOT applied**:
+> `"8295FB50" = { end = 0x8295FB58 }`. A **second** unattended boot (`worldcup2010_016.log`) did
+> **not** crash at all: it parked on the **title screen** ("PRESS START", screenshots at 35/50/65/75 s)
+> and its log stalls after `d:\BigFile_CheckpointB` at 70 s, i.e. the game waits for input and does
+> not advance on its own. **A real `Xbox Series X Controller` is attached and detected.** For the
+> keyboard, `mnk_mode` defaults to **false**; enable it via the **F4** settings overlay, `--mnk_mode`,
+> or `dist\Output\worldcup2010.toml` (`mnk_mode = true`). Round 26 also completed the XAM audit:
+> every content/user export this game imports is **implemented** in our runtime, and
+> `XamContentGetDefaultDevice` (the one content stub) is **not imported by this game at all**.
+
+> **Round 25 update (the paragraph below is kept, but is now out of date, and its crash is FIXED).**
+> The Round-24 statement
+> is still literally true for *boot + language screen*, but the user then drove the game with real
+> input: **input works, the language screen and the favourite-team selection work, and the game
+> crashes when the favourite team is confirmed, before the main menu.** Two runs failed
+> identically (`worldcup2010_013.log` 10:11:55, `worldcup2010_014.log` 10:16:22):
+> `INVALID INDIRECT CALL: target=837FD0F0 LR=83303088 CTR=837FD0F0 r3=B8F21A50 r11=B915E070
+> r12=83318368`, then `[FATAL] Call to invalid or unregistered function at guest address
+> 0x837FD0F0`; host exception `0xc0000409` (WER `BEX64`, our `assert_always` fail-fast) in
+> `ucrtbase.dll+0xa527e`. The target is a **4-instruction vtable dispatch thunk**
+> (`lwz r12,0(r3) / lwz r11,28(r12) / mtspr CTR,r11 / bctr`), materialised at `0x83318360` by
+> `lis r10,0x8380 ; addi r4,r10,-12048` and passed as the callback to the container iterator
+> `sub_83302FF8` from `0x83318364`. **No override was applied and nothing was rebuilt this round.**
+> It is one of a run of **9 identical thunks** (`0x837FD0F0..0x837FD170`) that Round 24's scanner
+> could not enumerate (two arithmetic bugs, see the Round 25 section at the end of this file).
+
+**One line.** **The game boots and renders.** With the approved vtable-gap override
+`"836A24B0" = { end = 0x836A24C0 }` (the second such gap, after `0x83884CA0`) plus the temporary
+on-demand guest-virtual commit workaround, `worldcup2010.exe` opens a visible 1920x1080 window
+titled *2010 FIFA World Cup South Africa PC*, draws the EA Sports / FIFA 2010 boot splash,
+advances to the **language-select screen** (UK flag, arrows, "English"), and is **still running
+when we kill it at 200 s** -- no fatal stop of any kind (no `INVALID INDIRECT CALL`, no unhandled
+guest access violation). Frames are real, not black (four screenshots, 834-1141 distinct colours
+sampled). The only runtime concession remains the workaround, which commits exactly **one** guest
+page (`0x0006C000`) on first touch. Still open: the language screen has not been confirmed
+*interactive* (no input was sent) and the workaround is still a workaround.
 
 ## Game Identity
 
@@ -2245,6 +2246,16 @@ Ends are the CFG-validated extents (max reachable + 4), not "first terminator": 
 first terminator is a conditional branch but the extent runs to `0x82A6377C`. All 4 table-referenced
 stubs (`0x82BCBDB8`, `0x831A11B8`, `0x8323FB38` and default `0x8211A170`) are in this tier.
 
+> **Correction (Round 32, 2026-10-19).** "All clean" above is wrong for two of the three
+> `0x8323FB38 / 0x8323FB6C / 0x8323FB8C` rows, and the "leaf" class is wrong for the first two
+> (FB8C is a complete leaf but still one entry point of the chain).
+> They are three entry points into **one contiguous QueryInterface chain**, not standalone
+> functions. The Round-14 validator's "max reachable + 4" treated the conditional return
+> `beqlr cr6` (word `0x4D9A0020`) as a terminator, so `0x8323FB38` stops at `0x8323FB48` and
+> `0x8323FB6C` stops at `0x8323FB7C`; `0x8323FB8C` is a genuinely complete leaf. The 14th
+> (default `0x8211A170..0x8211A178`) is clean (last instruction `b 0x82118AB8`). The Round-32
+> audit of all 291 entries found exactly these two as truncated; see `# Round 32` §8.2.
+
 **Tier 2 - 65 goto-only clean stubs.** Entries for them are no-ops (the body is already emitted in the
 parent as `loc_`), which matches the standing policy in the file header ("add one at a time only if a
 boot crash points at it"). Prepared on request, but not recommended as a batch - they cannot change
@@ -4171,3 +4182,2748 @@ registered `0x836A24C0`. No direct branches, no data hits. Same vtable-reachable
 entry `"836A24B0" = { end = 0x836A24C0 }` would be CFG-validated and non-overlapping.
 
 Publishing prepared locally; not yet pushed.
+## Appendix - superseded one-pager (Rounds 12-23), kept verbatim
+
+The editable one-page summary above replaces this block; nothing below is edited, so the
+audit trail keeps the earlier wording (and its later retractions) intact.
+
+
+**One line.** The port boots, loads both XEXs, runs ~48 s, then dies on a *new* unregistered
+indirect-call target `0x836A24B0` (a 4-instruction tail fragment); the first-boot crash at
+`0x83884CA0` is resolved by the override, and the original `0x0006C6B8` null-field read is
+tolerated by the temporary on-demand guest-virtual commit workaround (one page committed). The
+game loads menus, processes XAM/XContent, starts APU/GPU, then stops on the vtable call to
+`0x836A24B0`.
+~3.3 s) and reach a *different* wall: an indirect call to unrecompiled guest `0x83884CA0` ->
+`[FATAL] Call to invalid or unregistered function` (exit `0xC0000409`). Round 21's causal story
+("a fault in Xenia's virtual heap walks the guest page table and lazily commits the page, 3x per run")
+is **retracted**: Xenia's `AccessViolationCallback` has the *same* `!= kGuestPhysical` early-out
+(so it cannot commit a virtual page), and those 3 lines are Xenia kernel-init allocation lines
+logged next to `Added handle:F8000000 for class xe::kernel::XObject`, not the guest read. Why Xenia
+has that page committed is still **UNKNOWN**; the on-demand commit is a behavioural approximation of
+Xenia's *observable* result (the guest reads 0), not a copy of a Xenia code path. So the stop is still
+not a missing guest function, not a value divergence and not an override - but the *next* blocker
+after the page fix is a missing recompiled function (`0x83884CA0`). Round 17's `r3 != 0` claim remains
+retracted (Round 21).
+
+Evidence, corrections and dead ends from Rounds 7-11 are archived in
+[`NOTES_archive.md`](NOTES_archive.md); this file keeps the stages, this summary and Round 12.
+
+**Verified (measured, reproducible)**
+- Host<->guest translation is `host = base + guest` with `base` = a runtime-allocated, 4 GB-aligned
+  guest memory base: `0x1_0000_0000` in every run logged except one, which used `0x2_0000_0000`
+  (VERIFIED from the runtime's own AV line, 30+ occurrences:
+  `read of guest 0x0006C6B8 (host 0x000000010006C6B8)`); the generated macro is
+  `REX_LOAD_U32(x) = bswap32(*(u32*)(base + (u32)x + REX_PHYS_HOST_OFFSET(x)))` with
+  `REX_PHYS_HOST_OFFSET(a) = (a >= 0xE0000000) ? 0x1000 : 0` (VERIFIED in `codegen_pch_h.inja.h`).
+  Debugger guest reads must be byte-swapped (`bswap32`).
+  A "`host = guest + 0x8000_0000`" rule was briefly written here in Round 13 - **withdrawn**, see
+  Round 14 item 0. The mirror value `0x83A4648C -> 0x103A4648C` is UNVERIFIED (a hypothesis about a
+  masked 0x80000000 window that no log or macro supports; the generated code does not mask).
+- Singleton object at `0xBF3C57D0` (deterministic). Ctor `sub_82C50EF0`; publish
+  `sub_82C6AFC8+0xF4`; populate `sub_82CA1138` writes `+0x08/+0x0C/+0x10`; `+0x00 = obj-8`;
+  `+0x64` stays `0`.
+- Complete `+0x64` write history, all runs/threads: **3 stores, all before the read** (memset-zero,
+  memset-poison `0xCDCDCDCD`, ctor-zero). A valid pointer is never stored.
+- The 83 no-block stubs (Round 14): **71 leaf / 12 epilogue-tail-fragment**; **14 are reached by a
+  real call** (`sub_X(ctx, base)` emitted), **69 only by `goto loc_X`** (their body is already
+  emitted inside the caller, so the empty stub is dead weight); none reads an incoming non-volatile;
+  4 have a CFG extent that contains a sibling entry (all 4 in the harmless set). Execute breakpoints
+  must use the `PPCFuncMappings` host pointers, never `guest + base` (exe base `0x140000000`, dll base
+  `0x180000000`); no ICF folding of any sampled stub (24/24 distinct host pointers).
+  **Round 15 applied the 14 called ones** (Tier 1, with CFG-validated exclusive `end`s); the no-block
+  count fell **83 -> 69** and the 69 left are exactly the 65 Tier-2 + 4 Tier-3. **The AV is unchanged.**
+- Fault chain: `sub_82CBD7E0` -> `sub_82C501D0` (`r3 = *(0x83A4648C)`) -> `sub_832BF128`
+  (`r3 = *(r3+100)`) -> `lwzx r28,r3,r11` with `r11 = 0x6C6B8`; AV = read of guest `0x6C6B8` on the
+  **FEThread (guest 26)**, 0-1 ms after it names thread 35.
+- **Round 17 - RETRACTED by Round 21: Xenia does execute `0x82CBD80C`, but its `r3` there is 0.**
+  The firing counts still stand (`break_on_instruction = 0x82CBD80C` = **5,029 int3 in 100 s** and
+  **3,674 int3 in the 80 s control**, ~46-50/s, first hit 15.4/16.9 s in, one host thread, the C
+  run's first hit just after `SetThreadName(35, ...)`), but the *conclusion drawn from the condition
+  run was wrong*: the conditional path (`break_condition_gpr >= 0`) does **not** emit an int3 - it
+  compiles to `CallNative(TrapDebugBreak)`, which only logs
+  `tw/td forced trap hit! This should be a crash!` (and int3s only when `break_on_debugbreak` is
+  true, which Round 17 turned **off** in the copy). So "condition run = 0 int3" measured nothing.
+  Re-read with the correct oracle, that same run B log holds **3,618 forced-trap lines**, i.e.
+  `r3 == 0` was **true** at every execution - the opposite of what the bullet used to claim. Round 21
+  reproduces it in both directions: `r11 == 0x6C6B8` (provably true at that instruction) -> **3,873**
+  trap hits; `r3 != 0` -> **0**. See Round 21 for the source citations and the resolution.
+- **Round 18: the accessor setter is dead, and the init order is ctor/publish once each.** `0x82BDB2F8`
+  (the bare `+0x64` setter the accessor table pairs with the getter) is **never executed by Xenia**
+  - 0 hits in an 80 s armed run and **0 direct branch sites** in the image (two independent methods).
+  The ctor `0x82C50EF0` and the publish `0x82C6AFC8` each execute **exactly once**, before worker 35
+  exists; statics prove `0x82C6AFC8` allocates 0xC4 bytes, `bl 0x82C50EF0` at +0x28, then
+  `stw r3, 25740(r11)` with `r11 = 0x83A40000` - i.e. the singleton global `0x83A4648C`. The getter
+  and `0x82CBD80C` run ~58/s starting **after** the naming and the worker's first
+  `RtlInitializeCriticalSection` (reproduced in 3 runs). So the `+0x64` writer is not reachable
+  through the accessor table, and the field is already valid when the FEThread's per-frame path
+  reads it - the writer is still unidentified (Round 18).
+- **Round 20 (1 Xenia batch = 4 x 80 s on the copy + 1 run of our build; no rebuild, no override
+  change): the "producer" story fails on measurement.** In Xenia, armed on `0x82C9A4B0`
+  (`break_on_instruction` = 2194252976, read back) the producer **never executes** in 80 s (**0
+  int3 in the whole process**), while in the same batch `sub_82D03C90` fires **6x** (all guest
+  thread 26/FEThread, first at log line 10910 = +4905 from thid26, i.e. *before* the control run's
+  first `0x82CBD80C` read at +5206), `sub_82D1F100` fires **2x** (guest 26, line 12955 = +6860,
+  *after* the read) and `sub_82D22390` fires **30,670x** (30,667x guest 26/FEThread + 3x guest
+  6/Main XThread, first at line 9105 = +3029). Host tids were mapped to guest threads through the
+  run's own `XThread::Execute ... native=` lines. The instruction that kills our port, `0x82CBD80C`,
+  is executed by **guest thread 26 (FEThread)** in Xenia (control run: host tid 13956 = native
+  0x3684 = `XThread::Execute thid 26`). Our build, DR0..DR3 execute breakpoints on the four host
+  entries resolved **at runtime from the module's own `PPCFuncMappings`** (base + rva `0x7313000`,
+  87,183 entries read): **0 hits for all four before the AV**; the AV is the runtime's own
+  `Unhandled guest access violation: read of guest 0x0006C6B8 (host 0x000000010006C6B8)`, 3.26 s
+  in, guest handle 0xF8000354. So no A/B/ROOT/producer code runs before our fault, **and in Xenia
+  the `+0x64` value is not established by the producer either**. Round 19's "the writer is
+  identified" is therefore **not confirmed by execution** - the Round 20 section records the
+  contradiction and the two surviving explanations.
+- **Round 20 item 1: the `+0x18`-state / `+0x23`-gate object is *not* the singleton - it is a
+  separate polymorphic manager.** The object is 0x44 = 68 bytes, built by ctor **`0x82D041B8`**
+  (`alloc(68,0,"rw45 tag")` + `stw r9,0(r3)` at `0x82D17CC4`, i.e. vptr `0x8244CE04`) inside the
+  factory **`sub_82D17A50`**; its sibling 0x80-byte object (ctor `0x82D04048`, vptr `0x8244CDFC`)
+  has the identical state/gate field layout. The singleton is the 0xC4-byte **POD** built by
+  `0x82C50EF0` (`addi r11,0; stw r11,0..0xC0(r3)`, no vptr store at all). `sub_82D22390` (ROOT) is
+  that manager's **virtual command dispatcher** - case `r4==1` initialises exactly this layout
+  (`+0x18=0, +0x1C=3, +0x20..0x22=0, +0x23=1` gate armed, `+0x24=-1, +0x28=-1, +0x2C=0`). Item 4:
+  `.rdata 0x8244CE10` is the manager's **vtable slot** (vtable `0x8244CE04`, ROOT at `+0x0C`);
+  `.rdata 0x82607418` is **not** a dispatch vector - it is ROOT's own entry in the guest's static
+  function-extent table (`{code ptr, 0x4000_0000|(ninstr<<8)|flags}`), i.e. constant .rdata.
+- **Round 19 (static only, no runs): the writer is identified - `sub_82C9A4B0`.** It is a plain `new`
+  block: `alloc(0x6C6D0, 0, "rw45 tag")` at `0x82C9A4E0`, `bl 0x82C8D278` (the ctor, returns `this`)
+  at `0x82C9A4EC`, then **`stw r3, 100(r31)` at `0x82C9A4F8`** with `r31 = this` (set by `mr r31,r3`
+  on entry). Its only two callers (`0x82D03D4C` in `sub_82D03C90`, `0x82D1F234` in `sub_82D1F100`) both
+  do `bl 0x82C501D0` - the **singleton getter** - immediately before, so the store target is provably
+  `*(0x83A4648C) + 0x64`. `0x6C6D0 = 0x6C6B8 + 0x18` and it is the **only** allocation in either
+  image in `0x6C600..0x6C800`, i.e. the object's last field is exactly the `+0x6C6B8` element count
+  that the faulting `lwzx` reads (`+4` is the array base pointer, stride 8144, per the decoded
+  accessors `sub_82C71858` / `sub_82C71740`; the bare setter `0x82C718D0` writes the count). Our
+  build's DR write history of `+0x64` (3 stores, all zero/poison - the `alloc-failed` arm of the same
+  block would still be a 4th store) says the call never happens here. The call is gated by
+  `state == 8` at `0x82D03CD8` plus the one-shot byte `this+0x23` at `0x82D03D1C`, and the chain's root
+  `sub_82D22390` has **0 `bl` callers** (entered only via `.rdata` `0x8244CE10` / `0x82607418`).
+  Which of those guards excludes our build is the one thing still OPEN (needs a run or the GUI words).
+- Thread 35 is created CREATE_SUSPENDED, `startup = 0x8282FD10`, `start = 0x828360B8`,
+  `ctx = 0x40103E40`, then named, priority 1, affinity `0x10`, then resumed - identical numbers in
+  Xenia's log and in our runtime's recompiled call site. Its guest address is registered and its
+  name string resolves (`rw45_pkg_factory_seg`); its body writes nothing to `+0x64`.
+- Xenia's thread 35 does exactly: 2 x `KeTlsSetValue`, `ObReference`/`ObDereference`, then
+  **88 x `RtlInitializeCriticalSection`** (stride `0x60`) - and no other kernel call. Xenia's
+  level-3 log contains **no wait calls anywhere** (0/197,511 lines), so its silence about waits is
+  a logging gap, not evidence.
+- Our worker, by contrast, runs ~15.6 ms of guest CPU then parks in a guest wait
+  (`sub_8282DD28+0x19A`, handle `0xF28`, no timeout).
+- cvar surface: `ignore_thread_priorities` (ours **true**; Xenia **false** - the only real
+  difference), `ignore_thread_affinities` (both true), `protect_zero` (both true),
+  `writable_executable_memory` (both true); **`kernel_build_version` and `console_type` do not
+  exist in our runtime at all**. `log_high_frequency_kernel_calls` is defined but never read.
+- 5-run cvar matrix (incl. `--ignore_thread_priorities=false`): the AV is **unchanged** in all of
+  them.
+- Of the 83 "no blocks" stubs: **82 are real PPC code, 1 is code with Xenon VMX128 words, 0 are
+  padding/data**; all 83 are reachable (14 have emitted `sub_XXX(ctx,base)` call sites - Round 14
+  recount; an earlier "22" came from a scan that also counted `goto loc_X` sites) and
+  they are exactly the 83 functions that could not seal (console log: 92,659 `DISCOVERED` vs
+  83 `cannot seal (0 unresolved)`). None sits inside the singleton code, the fault chain, or
+  the worker bodies; none writes `+0x64`.
+  padding/data**. None sits inside the singleton code, the fault chain, or the worker bodies.
+- Both override copies: 266 entries, byte-identical, SHA-256 `FFB03BFC...`.
+
+**Inferred (not proven)**
+- Leading hypothesis: the `+0x64` assignment is a path that never executes here (narrow variant:
+  the factory must serve a creator request first).
+- Competing hypothesis: the assigner is reached only through an indirect `bctr` dispatch that
+  mis-routes in our build (12 `bctr` sites in `sub_82CBD7E0` alone).
+- The 867-function gap explanation is unverified (see Stage 3/5).
+- The two `0x8370xxxx` stubs near the worker chain are the most interesting of the 83 as candidate
+  silently-returning stubs on the worker's path, but nothing ties them to thread 35 yet.
+
+**Open items / next experiments (each needs approval)**
+1. Inverted throttle: 1 ms on / 100 ms off and 2 ms on / 200 ms off, ~3 s, must **not** break on
+   the AV - the only configuration that gives the factory wall time to serve an already-issued
+   request.
+2. Data references to the only `+0x64` setter `sub_82BDB2F8`: does any guest table row point at it?
+3. Resolve the 12 `bctr` sites in `sub_82CBD7E0` through the guest pointer tables.
+4. Counter on host `RtlInitializeCriticalSection` (hardware exec breakpoint or int3) to compare our
+   worker's critical-section count with Xenia's 88 - the decisive same-branch test.
+
+---
+
+
+
+## Round 24 (2026-10-18) - **the game boots and renders a real screen**
+
+### Verdict (VERIFIED, this round)
+
+* `dist\Output\worldcup2010.exe` opens a **visible top-level window** titled
+  `2010 FIFA World Cup South Africa PC`, rect `0,0 1920x1080`, `visible=True iconic=False`,
+  **0.6 s** after launch (polled `MainWindowHandle` / `MainWindowTitle`; not assumed).
+* It draws the **EA Sports / FIFA 2010 World Cup South Africa boot splash**, then advances to the
+  **language-select screen** (UK flag between two arrows, caption "English").
+* It was **still running when killed at 200 s**, at `cpu=550.8 s` of 200 s wall (~2.75 cores busy:
+  actively working/rendering, not hung). **No crash of any kind**: zero `FATAL`, zero
+  `INVALID INDIRECT CALL`, zero `Unhandled guest access violation`.
+* **Frames are real, not black**: four screenshots of the window rect were captured; a 64x36
+  colour-grid sample gives 1141 / 834 / 834 / 834 distinct colours; each PNG is ~1.95 MB.
+  `C:\Users\ramic\AppData\Local\Temp\opencode\round24_shots\shot{1..4}_*.png`.
+* Run log: `dist\Output\logs\worldcup2010_012.log` (9,239 B, 79 lines).
+
+### Item 2 - override applied, one rebuild, one boot
+
+* Pre-change backup: `D:\FWC10\_backups\20261018-093302-r24` (Item 5).
+* Entry added to **both** copies (`Installer\recomp-template\config\fifadllzf_overrides.toml` and
+  `C:\FWC10B\fwc10stage4\WorldCup2010Rex\config\fifadllzf_overrides.toml`), byte-identical:
+  13,962 B -> 15,040 B, SHA-256 `802EE586D73B757573FDA264EC7D25BBA2EA2A3B0287E1E0DF69510773229DA1`,
+  **281** entries (was 280).
+* Rebuild: 09:34:00 -> 09:41:26 = **446 s** wall, exit **0**. Codegen **396.3 s**,
+  `6 written, 653 unchanged, 0 deleted, 1 module(s) up to date` - `config\*` is among the build's
+  fingerprints, so exactly the affected files were regenerated. `sub_836A24B0` is now in
+  `worldcup2010_init.cpp:72805`, `worldcup2010_recomp.166.cpp:30809`,
+  `worldcup2010_register.cpp:72794`.
+* New binaries in `dist\Output`:
+  `rexruntime.dll` 10,127,360 B `4EFD66C708AC33CA227AEAEA05415A321F5957ACEC8D6595B4CB7D6B61D6E788`;
+  `worldcup2010_fifadllzf.dll` 123,052,032 B `4D7AB3FE86CE7FEC046CE42997E69AAA4453761B5D86F24106A1387D2709141A`;
+  `worldcup2010.exe` 8,022,528 B `FE2680B74E091C9FEE00BFBAD157F2ED760346F4A1C846CC5CFA870BF816E91E`;
+  `rexgpu-xenos.dll` 3,033,600 B `A4559360FB18E1E82E74E2D1E111ABC544EE26A13F777CD5186D3F40EF11F877`.
+  The workaround literal `...committed on demand as page...` is present in the new
+  `rexruntime.dll`. (The sentence is built from the split format string
+  `"Guest virtual {} of 0x{:08X} (host 0x{:016X}) committed on demand as page 0x{:08X} ({})"`, so
+  the substring `Guest virtual read of` is *not* contiguous in the binary - it is split by the
+  `{}`.)
+* Boot: **200 s**, no exit (we killed it). Exactly **one** on-demand commit:
+  `[warning] [sys] [t9928] Guest virtual read of 0x0006C6B8 (host 0x000000010006C6B8) committed on demand as page 0x0006C000 (first touch); total 1`
+  preceded in the same millisecond by our own
+  `BaseHeap::AllocFixed attempting commit on unreserved page`.
+* **Next stop: none.** The former next stop (`0x836A24B0`) is gone and nothing replaced it.
+* Other progress in the log (VERIFIED): `XexLoadImage fifadllzf.xex -> hmodule=0x30033000`; XAM
+  ordinal resolution (`XexGetProcedureAddress`); APU endpoint opened
+  (`'Speakers (USB Audio Device)': 2 ch, 48000 Hz, format 0x8120`); `BigFile_CheckpointA` /
+  `BigFile_CheckpointB`; `XamBackgroundDownloadSetMode`; plus the expected tail of
+  `[NtCreateFile] FAILED ... 0xc000000f` for files the PC port does not ship
+  (`d:\memoryfw.ini`, `d:\data\loc\locale.bh`, `d:\audiodata\aemsdata\*.ast`, ...).
+
+### Item 1 - systematic scan for unregistered `lis+ori` / `lis+addi` code targets (no run)
+
+Tool: `C:\Users\ramic\AppData\Local\Temp\opencode\round24_scan3.py` (**3 s**, no run). Method:
+
+1. Unpack `.text` of `fifadllzf.xex` (`0x82650000..0x838D8DB4`) as big-endian words.
+2. Enumerate every `lis rD,imm` followed within 8 instructions by `ori rD,rD,lo` /
+   `addi rD,rD,lo` on the **same** register; keep constants landing inside `.text`.
+3. Drop targets that are already registered or already an override start.
+4. Decode from each survivor with a real CFG walk: `bl`/`bcl` are **calls** (not terminators);
+   `bclr`/`bcctr` are returns / indirect tails (with LK=1 they are indirect calls); conditional
+   branches fork and are **not** terminators. "Complete" = every explored path ends in `blr` /
+   `bctr` / a tail `b` leaving the region.
+5. Reject overlap with registered extents and override ranges; reject targets that fall *inside*
+   the previous registered function's extent.
+6. Exclude a **pointer/jump table stored inside `.text`** (a run of words whose value is itself a
+   `.text` address - they decode as `lwz rD,x(rA)` and fool a linear walk): `tabfrac >= 20%`.
+   Exclude a **switch dispatch** by looking at the previous registered function's body for an
+   indexed table load (`lwzx`, opcode 31 / XO 23).
+7. Rank: a store of the built register right after the `lis`/`ori` pair (vtable-slot pattern); a
+   true gap (previous registered function ends exactly at the target); that previous function
+   ending in `bctr` and **not** containing `lwzx`; small size.
+
+Counts (VERIFIED):
+
+| stage | count |
+|---|---|
+| `lis` + `ori`/`addi` pairs forming a constant inside `.text` | 2,114 |
+| unique target addresses | 1,618 |
+| not a registered start and not an override start | 1,023 |
+| ...inside the previous registered function's extent (mid-function, not an entry) | 955 |
+| ...overlap a registered extent | 11 |
+| ...overlap an override range | 1 |
+| ...not decodable as a complete function | 6 |
+| **complete and outside every registered extent = candidates** | **50** |
+| ...with a static 32-bit occurrence in a non-exec section | 0 |
+| ...preceded by a jump-table dispatch (`lwzx`) | 4 |
+| ...whose extent is a `.text` pointer/jump table (`tabfrac >= 20%`) | 14 |
+| ...with no exact gap (unclaimed bytes before the entry) | 30 |
+| **tier A: true gap, no pointer table, no jump-table dispatch** | **6** |
+| **tier B: same, but no exact gap** | **30** |
+| **proposed batch (A then B, <= 60)** | **36** |
+
+The mid-round v1 numbers (464 candidates) were **wrong and are withdrawn**: that decoder treated
+`bl` as a terminator and ignored the `bclr`/`bcctr` variants, which truncated extents (to the first
+call) and let mid-function addresses pass the "outside the previous function" test. Use the v2
+counts above.
+
+Tier A (all six have the previous registered function ending *exactly* at the target):
+
+```
+"82AC37F8" = { end = 0x82AC3808 }   # lwz r12,0(r3) / lwz r11,152(r12) / mtspr / bctr
+"82EE77B0" = { end = 0x82EE77C4 }   # lis/addi r11 -> global / lwz r11,8(r11) / mtspr / bctr
+"8267C070" = { end = 0x8267C074 }   # single tail `b`
+"83018288" = { end = 0x83018298 }   # lis/ori const 0xC14A247C / cmp / bclr
+"8323F4B8" = { end = 0x8323F4E0 }   # object init: stw r9,4(r3) / stw r10,0(r3) / stw r11,8(r3) / blr
+"82685B18" = { end = 0x82685B34 }   # lis 0x839B / mr r4,r3 / lwz r3,-32712(r11) / lwz / lwz / mtspr / bctr
+```
+
+Tier B (30) and the full disassembly of the top 20 are in `round24_scan3_out.txt`.
+
+> ### WITHDRAWN (2026-10-18, Round 26, on the user's instruction)
+>
+> **The 36-entry batch above is withdrawn and must never be applied.** The Round-25 audit found
+> that **13 of its 36 entries name the WRONG address** (real value = entry `- 0x10000`, caused by
+> `round24_scan3.py:172` not sign-extending the `addi` immediate and requiring
+> `dest == src == lis dest`); see "AUDIT OF THE PENDING 36-ENTRY BATCH" in the Round 25 section.
+> The three tier-A entries printed above are among the wrong ones. The **corrected** pool is
+> **NOT APPLIED** and is listed in the Round 26 section below.
+
+### Item 3 - how Xenia's backing mapping is created vs ours (VERIFIED: source + local experiment)
+
+**Xenia** (`xenia-canary/xenia-canary`, `canary_experimental`), `src/xenia/memory.cc:180-185`:
+
+```cpp
+  // Create main page file-backed mapping. This is all reserved but
+  // uncommitted (so it shouldn't expand page file).
+  mapping_ = xe::memory::CreateFileMappingHandle(
+      file_name_,
+      // entire 4gb space + 512mb physical:
+      0x11FFFFFFF, xe::memory::PageAccess::kReadWrite, false);
+```
+
+`src/xenia/base/memory_win.cc:212-226`:
+
+```cpp
+FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path,
+                                          size_t length, PageAccess access,
+                                          bool commit) {
+  DWORD protect =
+      ToWin32ProtectFlags(access) | (commit ? SEC_COMMIT : SEC_RESERVE);
+  auto full_path = "Local" / path;
+  return CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, protect, ...
+```
+
+So the whole 4 GB guest + 512 MB physical arena is **`PAGE_READWRITE | SEC_RESERVE`** - reserved,
+**not** committed. The low virtual heap is committed up front only for its **first 64 KB**
+(`memory.cc:234-239`):
+
+```cpp
+  // Protect the first and last 64kb of memory.
+  heaps_.v00000000.AllocFixed(
+      0x00000000, 0x10000, 0x10000,
+      kMemoryAllocationReserve | kMemoryAllocationCommit,
+      !cvars::protect_zero ? kMemoryProtectRead | kMemoryProtectWrite
+                           : kMemoryProtectNoAccess);
+```
+
+Xenia's other up-front commits are the GPU writeback windows (`vC0000000` at `0xC0000000` +
+`0x01000000` and `v7F000000` at `0x7F000000` + `0x00C80000`, both reserve|commit RW,
+`memory.cc:243-252`), the whole physical range (`memory.cc:254-263`), and
+`v80000000.Alloc(0x40000, 4 * 1024, kMemoryAllocationCommit, RW)` (`memory.cc:281-285`).
+**`0x6C000` is in none of them.**
+
+Later commits go `BaseHeap::AllocFixed` -> `xe::memory::AllocFixed` ->
+`VirtualAlloc(..., MEM_COMMIT, ...)` (`memory_win.cc:110-131`), and a *commit-only* request on a
+reserved page is silently promoted (`memory.cc:1118-1123`):
+
+```cpp
+    if ((allocation_type == kMemoryAllocationCommit) &&
+        !(state & kMemoryAllocationReserve)) {
+      // Attempting a commit-only op on an unreserved page.
+      XELOGW("BaseHeap::AllocFixed attempting commit on unreserved page");
+      allocation_type |= kMemoryAllocationReserve;
+```
+
+`ShouldSkipHostCommit` (`memory.cc:106-116`) skips the host commit only when the **host** page size
+is > 4 KB; on Windows x64 `page_size()` returns 4096 (`memory_win.cc:30-32`), so Xenia really does
+issue it.
+
+And Xenia's access-violation handler **refuses non-physical heaps** (`memory.cc:598-614`):
+
+```cpp
+  uint32_t virtual_address = HostToGuestVirtual(host_address);
+  BaseHeap* heap = LookupHeap(virtual_address);
+  if (heap->heap_type() != HeapType::kGuestPhysical) {
+    return false;
+  }
+```
+
+**Ours** (`ReXGlue/src/system/xmemory.cpp`) is the same design:
+`CreateFileMappingHandle(file_name_, mapping_size, PageAccess::kReadWrite, false)` (lines 141-145)
+=> `SEC_RESERVE`; `heaps_.v00000000.Initialize(..., 0x00000000, 0x40000000, 4096)` with the same
+64 KB `AllocFixed(0x00000000, 0x10000, 0x10000, reserve|commit, NoAccess)` (lines 186-187,
+206-210); and `AccessViolationCallback` with the same `!= kGuestPhysical` early-out (lines
+608-614) - the on-demand commit *above* that early-out (lines 547-606) is our Round-22 workaround,
+not Xenia code.
+
+**Experiment (VERIFIED, on this machine, `spr_test.py`).** Reproducing the exact creation with
+`CreateFileMappingW(INVALID_HANDLE_VALUE, ..., PAGE_READWRITE|SEC_RESERVE, ...)` + `MapViewOfFile`:
+
+* `SEC_RESERVE` view: every page reports `state=RESERVE protect=0x0 type=MAPPED`
+  - **not committed up front**.
+* `SEC_COMMIT` view: every page reports `state=COMMIT protect=0x4 type=MAPPED`.
+* A raw read of a reserved page of the `SEC_RESERVE` view **faults with `0xC0000005`** - Windows
+  does **not** commit it on demand.
+* `VirtualAlloc(addr, 0x1000, MEM_COMMIT, PAGE_READWRITE)` *inside* the view succeeds, splits the
+  region to a single 0x1000 `COMMIT` page with `protect=0x4` - the only way to make the page live,
+  and exactly the mechanism Xenia's `AllocFixed` and our workaround use.
+
+Our faulting page `0x1_0006_C000` reported `MEM_RESERVE` / `protect 0` / `MEM_MAPPED` (Round 23),
+i.e. byte-for-byte the `SEC_RESERVE` shape above. **The mapping flags are identical in Xenia and
+in ours, so the fault is not a flag difference.**
+
+#### Correction to the Round 23 notes (Round 23 item 3)
+
+Round 21 verified `r3 == 0` at `0x82CBD80C` in Xenia **with controls**, so Round-23 reading (b) -
+"Xenia never takes the null-base read" - is **ruled out and retracted**. With (i) both runtimes
+`SEC_RESERVE`, (ii) neither committing `0x6C000` up front, and (iii) Xenia's AV handler refusing
+virtual heaps, the surviving explanation is that **in Xenia page 0x6C000 really is committed before
+that read by a path our runtime does not take**. Supporting asymmetry (VERIFIED, Round 23): Xenia
+prints `BaseHeap::AllocFixed attempting commit on unreserved page` **3x per run** (three
+commit-only promotions of reserved pages) while our runtime prints it **0x** without the
+workaround. *Which* caller does it stays **INFERRED, not verified** - the warning prints no
+address - and would need a source-wide search for `AllocFixed(..., kMemoryAllocationCommit, ...)`
+callers. Our workaround reproduces the *effect* (commit on first touch) and is what makes this
+round's boot possible.
+
+### Item 4 - the exact one-line command
+
+Same flags as our runs = **no flags**, working directory `dist\Output`:
+
+```
+cd /d D:\FWC10\world-cup-2010-pc-port\dist\Output && worldcup2010.exe
+```
+
+(Prepend `start ""` if you want the console to return immediately. Each run writes a new
+`logs\worldcup2010_NNN.log`.) Our runner used `Start-Process -WorkingDirectory dist\Output` with no
+arguments - identical, except that our runner also polls `MainWindowHandle` and screenshots the
+window.
+
+### Item 5 - backups / verification state
+
+`D:\FWC10\_backups\20261018-093302-r24` (pre-change): `xmemory.cpp.with_r23_workaround`
+(`48D8EF09616A1CC4F5B28F14AD45D343FBA45CD1060F982D6AD4D5100AAA8BE9`, 101,208 B); both
+`fifadllzf_overrides.toml` copies *before* the entry (`D69ADAA0...684A`, 13,962 B); both
+`default_overrides.toml` copies; `BuildWorldCup2010.ps1.before`; `git-HEAD.txt`;
+`git-status-porcelain.txt`; `README.txt`; `SHA256SUMS.txt`; appended line in
+`D:\FWC10\_backups\LAST_BACKUP.txt`. Post-change artefacts (both override copies as `*.after`, the
+build log, the scan output, the run log, the four screenshots, the driver scripts) are added to the
+same directory after the boot.
+
+`D:\FWC10\xenia` was **not touched and Xenia was not run this round**, so no post-run re-verification
+of its file set was required.
+
+Changes remain uncommitted (no git repo at `D:\FWC10`).
+
+---
+
+## Round 25 (2026-10-18) - favourite-team selection crashes: a second vtable-thunk run the Round-24 scan could not see
+
+User report: **input works**; the language screen and the **favourite-team selection work**; it
+**crashes after confirming the favourite team, before the main menu**. No rebuilds and no override
+changes until approval. 45-minute box.
+
+**Nothing was built, no override was changed, no Xenia run by us this round.** The only writes were
+this file and the round backup directory. The crash diagnosis is from the user's own two runs.
+
+### Item 1 - the failure (VERIFIED)
+
+| run | log | game start | fatal | thread |
+|---|---|---|---|---|
+| 013 | `dist\Output\logs\worldcup2010_013.log` | 10:11:0x | 10:11:55.920 | t28248 |
+| 014 | `dist\Output\logs\worldcup2010_014.log` | 10:15:26.630 | 10:16:22.882 | t18044 |
+
+* **Failure type: invalid indirect call, not an access violation** (VERIFIED, both logs):
+  `INVALID INDIRECT CALL: target=837FD0F0 LR=83303088 CTR=837FD0F0 r1=7019E910 r2=00001100
+  r3=B8F21A50 r11=B915E070 r12=83318368` followed one line later by
+  `[critical] [core] [t18044] [FATAL] Call to invalid or unregistered function at guest address
+  0x837FD0F0`.
+* **Guest address: `0x837FD0F0`** (`fifadllzf`, `.text` `0x82650000..0x838D8DB4`, offset
+  `0x11AD0F0`, 4-byte aligned, **not** a registered start, **not** an override start).
+* **Host exception code: `0xc0000409`** (`STATUS_STACK_BUFFER_OVERRUN` / fail-fast; WER
+  `Event Name: BEX64`, `P4: ucrtbase.dll`, `P6: 0x3f426c5b`, `P7: 0x00000000000a527e`,
+  `P8: c0000409`, `P9: 0x7`); `Application Error` 1000 for `worldcup2010.exe`
+  (`Exception code: 0xc0000409`, `Fault offset: 0xa527e` in `ucrtbase.dll`), fault buckets for the
+  two runs are **identical** (`2146590310605515663`). This is our runtime's own fatal path
+  (`assert_always()` -> CRT `abort()`/`__fastfail`), i.e. the *consequence* of the FATAL above, not
+  an independent host crash (VERIFIED: the fatal line is written first, in the same thread).
+* Crash dumps exist: `C:\Users\ramic\AppData\Local\CrashDumps\worldcup2010.exe.24928.dmp`
+  (10:11:59, run 013) and `...worldcup2010.exe.12432.dmp` (10:16:25, run 014). No PDB/`cdb`/WinDbg,
+  so the dumps were not opened; the logs are sufficient and decisive.
+* Run 014 lasted **56 s** (10:15:26.630 -> 10:16:22.882); it contains **zero** `FATAL` before the
+  final one and **zero** access violations.
+
+### Item 2 - what the target is, and where the pointer comes from (VERIFIED)
+
+`0x837FD0F0` is one of **ten consecutive 16-byte vtable-dispatch thunks** at
+`0x837FD0E0..0x837FD180`; only the *first* is registered, the other **nine are not**:
+
+```
+0x837FD0E0  lwz r12,0(r3) ; lwz r11,12(r12) ; mtspr CTR,r11 ; bctr   <-- REGISTERED
+0x837FD0F0  lwz r12,0(r3) ; lwz r11,28(r12) ; mtspr CTR,r11 ; bctr   <-- crashed here (slot +0x1C)
+0x837FD100  lwz r12,0(r3) ; lwz r11,44(r12) ; mtspr CTR,r11 ; bctr   (slot +0x2C)
+0x837FD110  lwz r12,0(r3) ; lwz r11,60(r12) ; mtspr CTR,r11 ; bctr   (slot +0x3C)
+0x837FD120  lwz r12,0(r3) ; lwz r11,32(r12) ; mtspr CTR,r11 ; bctr   (slot +0x20)
+0x837FD130  lwz r12,0(r3) ; lwz r11,48(r12) ; mtspr CTR,r11 ; bctr   (slot +0x30)
+0x837FD140  lwz r12,0(r3) ; lwz r11,64(r12) ; mtspr CTR,r11 ; bctr   (slot +0x40)
+0x837FD150  lwz r12,0(r3) ; lwz r11,36(r12) ; mtspr CTR,r11 ; bctr   (slot +0x24)
+0x837FD160  lwz r12,0(r3) ; lwz r11,8(r12)  ; mtspr CTR,r11 ; bctr   (slot +0x08)
+0x837FD170  lwz r12,0(r3) ; lwz r11,40(r12) ; mtspr CTR,r11 ; bctr   (slot +0x28)
+```
+
+Each is `lwz r12,0(r3)` (the object's vtable) / `lwz r11,<slot>(r12)` / `mtspr CTR,r11` / `bctr` --
+a virtual-method forwarder. Validated with the same procedure as `0x83884CA0` and `0x836A24B0`:
+true gap (the previous registered entry `0x837FD0E0` ends **exactly** at `0x837FD0F0`), no
+registered entry inside the extent, terminator `bctr` at `0x837FD0FC`, no `bl` inside, no incoming
+non-volatile argument reads, `static=0`, `.text`-pointer-table fraction 0%.
+
+**Where the pointer comes from (VERIFIED, by disassembly):** it is *passed in*, as the second
+argument of a container iterator, and it is materialised by the **negative-`addi` idiom with a
+different destination register**:
+
+```
+0x83318354  3D408380  lis  r10, 0x8380
+0x83318358  38A10054  addi r5, r1, 84
+0x8331835C  807F0004  lwz  r3, 4(r31)
+0x83318360  388AD0F0  addi r4, r10, -12048      ; r4 = 0x83800000 - 0x2F10 = 0x837FD0F0
+0x83318364  4BFEAC95  bl   0x83302FF8          ; iterate, callback = r4
+0x83318368  ...                                ; == r12 in the crash dump
+```
+
+and the iterator itself does `lwz r11,12(r30) / mtspr CTR,r27 / lwz r4,0(r26) / add r11,r11,r31 /
+lwz r3,4(r11) / bcctrl` (`CTR = r27` = the callback argument; `r3` = the object). So the game is
+iterating a container and invoking this interface method on each element. The same address is
+materialised at **8 further sites** (`0x833183DC`, `0x833183F4`, `0x83318418`, `0x83318464`,
+`0x837B...`, `0x8380...`).
+
+**Why Round 24's scan did not propose it (VERIFIED - two enumeration bugs).** `round24_scan3.py:172`
+combined the halves as `full = (hi << 16) | (w2 & 0xFFFF)` for **both** `ori` and `addi`, and
+required `dest == source == lis dest`. The real code is `lis r10,0x8380` + `addi r4,r10,-12048`:
+(a) `addi` **sign-extends** its immediate, so the value is `0x83800000 - 0x2F10 = 0x837FD0F0`, not
+`0x8380D0F0`; (b) the **destination register differs** from the `lis` destination. Both were
+invisible to the Round-24 scan, and this address is **not** stored anywhere in the image (0 data
+occurrences of `0x837FD0F0` in either XEX) -- it exists only as those `lis`/`addi` constructions.
+
+### Item 1 (Round-24 batch) - AUDIT OF THE PENDING 36-ENTRY BATCH: 13 of 36 entries name the WRONG address (VERIFIED)
+
+The same arithmetic bug applies to the batch that is still awaiting approval. Re-deriving every
+materialised constant correctly and re-checking the batch's 36 entries:
+
+* **23 entries** name an address that a real `lis`+`ori/addi` pair does build (kept).
+* **13 entries** name an address that **no instruction builds** -- the value the code really builds
+  is `entry - 0x10000`:
+  - tier A (3 of 6!): `0x8267C070` (really `0x8266C070`), `0x83018288` (really `0x83008288`),
+    `0x8323F4B8` (really `0x8322F4B8`) -- and all three "real" addresses are **already registered**,
+    so those tier-A entries are pure phantoms.
+  - tier B (10 of 30): `0x82EB8C80`, `0x82EEB048`, `0x83018110`, `0x8301BEA8`, `0x8301DB90`,
+    `0x8267AFC8` (real addresses all already registered) plus `0x8309C894` -> `0x8308C894`,
+    `0x830AC60C` -> `0x8309C60C`, `0x833AD37C` -> `0x8339D37C`, `0x834C8CE0` -> `0x834B8CE0`
+    (**these four real addresses are NOT registered** - genuine missing functions, off by `0x10000`).
+* **Do not apply the 36-entry batch as it stands.** The corrected pool is in
+  `round25_scan_out.txt` / `round25_scan_candidates.json` (563 non-registered candidates -> 87
+  valid -> **12 tier A**).
+
+### Item 4 - every `Xam*` / `Nt*` call between the language screen and the crash (VERIFIED)
+
+Log 014 is 90 lines / 56 s. Complete inventory of kernel/XAM traffic:
+
+* **`XamContentCreateEx`, `XamUserWriteProfileSettings`, `XamUserReadProfileSettings`,
+  `XamContentClose`, any content-device mount: ZERO occurrences.** There is **no save write** in
+  our run - not one content/package/file write of any kind.
+* The only `Xam*` line in the whole log is a *stub*: `__imp__XamBackgroundDownloadSetMode STUB`
+  (10:15:56, t27816). The only other stub is `__imp__XUsbcamGetState STUB - returning 0x0` (68).
+* **`NtCreateFile`: 26 calls, all FAILED**, all `-> 0xc000000f` (`STATUS_OBJECT_NAME_NOT_FOUND`),
+  all read-only lookups of game data on `d:\` / `E:\dvdini` (`memoryfw.ini`, `data\loc\locale.bh`,
+  `cl.ini`, `data\loc\eng_us_upd.db`, `d:\BigFile_CheckpointA`, `d:\BigFile_CheckpointB`,
+  `d:\audiodata\aemsdata\*.ast`, ...). **Zero successes, zero writes.** The save path is not
+  reached and `0xc000000f` here is benign (optional config/audio files the PC conversion does not
+  ship - the game continues).
+* **The tell-tale sequence immediately before the crash** (thread `t27816`, caller `0x8319C1C0`) --
+  the game resolves the **content/save** API by ordinal, right after the favourite team is chosen:
+  - `10:16:07.283` ordinal `0x00000279` -> `XamContentAggregateCreateEnumerator`
+  - `10:16:07.334` ordinal `0x00000271` -> `XamContentCreateInternal`
+  - `10:16:20.818` ordinal `0x00000270` -> `XamContentDeleteInternal`
+  - `10:16:21.848` `NtCreateFile` `d:\audiodata\aemsdata\21_LL.ast` FAILED
+  - `10:16:22.882` **the fatal indirect call**
+  So the game is *setting up the save/content flow* when it enters the code path that calls
+  `0x837FD0F0`. **The save write is involved only in the sense that the crash happens while the
+  game is preparing to write `WCSettings0`; it is not caused by a save failure** (no content call,
+  no device access, no error was ever emitted). Note our SDK *does* implement
+  `__imp__XamContentCreateEx` / `XamContentCreateInternal` / `XamContentDeleteInternal` (real
+  bodies in `src\kernel\xam\xam_content.cpp`), while most package/mount entry points
+  (`XamContentCreateAndMountPackage`, `XamContentMountPackage`,
+  `XamContentGetMountedPackageByRootName`, `XamContentCreateEnumeratorInternal`, ...) are
+  `REX_EXPORT_STUB`.
+
+### Item 3 - access violation? No (VERIFIED: not applicable)
+
+The failure is an invalid indirect call, so there is no failing guest address / page to report. For
+completeness: the run contains **no** `Unhandled guest access violation` line, and the on-demand
+commit workaround fired **exactly once**, at **10:15:28.961** (2.3 s in, on the *startup* path, not
+at the crash): `Guest virtual read of 0x0006C6B8 ... committed on demand as page 0x0006C000 (first
+touch); total 1`, preceded by `BaseHeap::AllocFixed attempting commit on unreserved page` - i.e. the
+same single `0x6C000` commit as Rounds 23 and 24.
+
+### Item 5 - what Xenia does at the same stage that we do not (VERIFIED, read-only)
+
+Sources: `D:\FWC10\xenia\xenia.log` (97,810 B, 1541 lines, 10-17 14:44 - read only, not modified)
+and the content stores `D:\FWC10\xenia\content` / `C:\FWC10B\xenia_dbg\content`.
+
+* Xenia's *import* tables (the `F ...` dump) contain, for `fifadllzf` (`82300440`), exactly the
+  calls our log never shows:
+  `XamContentCreateEx (0x259)`, `XamContentDelete (0x25B)`, `XamContentClose (0x25A)`,
+  `XamContentGetCreator (0x262)`, `XamContentGetLicenseMask (0x266)`,
+  `XamContentCreateEnumerator (0x25C)`, `XamContentGetDeviceState (0x265)`,
+  `XamContentGetDeviceData (0x25E)`, and `XamUserReadProfileSettings (0x219)`.
+* Xenia actually **creates and mounts the save content**: `~ContentPackage: Closing package:
+  rmcsave (Device: \Device\Content\3\) Device mounted: Yes` and the same for `\Device\Content\4\`,
+  plus `Savegame ID: 454108E4`.
+* On disk Xenia produced the **`WCSettings0` save** - `content\E03000007F393D8F\454108E4\
+  00000001\WCSettings0 20261017134124` + `...134145` (494,349 B of data + 40,960 B headers) plus
+  the profile `.gpd` files (`454108E4.gpd`, `FFFE07D1.gpd`) and the `Account` file. **Our run
+  produced nothing** (no `content` directory is even touched; `dist\Output` has no save store).
+* Interpretation (INFERRED): the game reaches the same "create/open `WCSettings0`" step in both
+  emulators; Xenia completes it, we crash one call *earlier* - inside game code that runs when the
+  content objects are being built. We cannot yet say whether our content/save path would succeed
+  after the crash is fixed, because the game never gets there.
+
+### Item 6 - smallest fix, with evidence (NOT APPLIED - awaiting approval)
+
+**Proposal (smallest):** one override entry, in **both** override copies:
+
+```toml
+"837FD0F0" = { end = 0x837FD100 }
+```
+
+Evidence: the game *does* call it (LR `0x83303088`, `CTR=target`, callback materialised at
+`0x83318360`, two independent runs, identical registers); it is a true function start (previous
+registered entry ends exactly at it; `bctr` terminator; no registered entry inside; no static
+table; not a `.text` pointer table; `lwzx`-free); and the same validation was used for
+`0x83884CA0` and `0x836A24B0`.
+
+**Wider variant (family):** the whole run, 9 entries, `"837FD0F0"` ... `"837FD170"` each
+`{ end = next }` (`0x837FD100`, `0x837FD110`, ..., `0x837FD180`). All nine are real thunks
+materialised by real `lis`/`addi` pairs (`0x837FD0E0` was registered; the other nine were not) and
+the interface is a contiguous vtable slot map (slots `0x0C 0x1C 0x2C 0x3C 0x20 0x30 0x40 0x24
+0x08 0x28`), so the next method call on the same object would hit the next thunk.
+
+**Caveat (INFERRED, honest):** each thunk is a *forwarder* - `0x837FD0F0` will, when it runs,
+jump to whatever the object's vtable slot `+0x1C` holds. If that callee is itself unregistered the
+run will stop there instead (a different address). The one-entry proposal is therefore the smallest
+step that lets the run continue and *report the next stop*, not a promise that it reaches the main
+menu.
+
+**Not applied. Nothing was built.** The next action is the user's call: apply the single entry (or
+the 9-entry family), rebuild once, boot, and report wall time / commits / next stop.
+
+### Verification vs inference (Round 25)
+
+* VERIFIED: the failure is an invalid indirect call at `0x837FD0F0`, identical in both runs; the
+  host `0xc0000409` is our own fail-fast; the page state question (AV) does not apply; the on-demand
+  commit fired once on the startup path; the thunk's 4 instructions; the true-gap validation; the
+  materialisation at `0x83318360` and 8 other sites; zero data occurrences of the address in either
+  XEX; the two Round-24 scanner bugs and the 13 wrong batch entries; the complete XAM/Nt inventory
+  (no content/save call, 26 failed `NtCreateFile`); Xenia's import list, `rmcsave` mounts and the
+  on-disk `WCSettings0` save; the SDK export/stub split.
+* INFERRED: that the crash happens *inside the flow that prepares the `WCSettings0` write* (it
+  follows the three `XamContent*Internal` resolutions by 2 s); that registering `0x837FD0F0` will
+  move rather than end the problem (the real callee behind vtable slot `+0x1C` is data); that Round
+  24's 36-entry batch would have been harmful if applied unmodified (12 of the 13 wrong addresses
+  are already-registered functions, so those overrides would have re-declared an existing function
+  with a bogus extent).
+
+### Round 25 artefacts (all under `C:\Users\ramic\AppData\Local\Temp\opencode\`)
+
+`round25_triage.py` / `_out.txt` (target + call site), `round25_run.py` / `_out.txt` (the 9-thunk
+run), `round25_scanfix.py` / `_out.txt` (enumeration correction), `round25_origin.py` / `_out.txt`
+(pointer origin), `round25_scan.py` (corrected scanner, cloned from `round24_scan3.py`) /
+`round25_scan_out.txt` / `round25_scan_candidates.json`, `round25_batch_audit.py`,
+`round25_audit.py`, `round25_dbg.py`, `r25_patch.py`, `r25_logscan.py`. Backup directory
+`D:\FWC10\_backups\20261018-105xxx-r25` with SHA-256 sums.
+
+`D:\FWC10\xenia` was **not modified and Xenia was not run** (only `xenia.log` was read);
+`C:\FWC10B\xenia_dbg` was read only. Neither copy was written to.
+
+---
+
+## Round 26 (2026-10-18) - the nine-thunk family is applied; the favourite-team crash is fixed; a new stop appears
+
+**Box:** backup + one override change + **one rebuild** + two boots + one source audit. No Xenia run.
+
+### What the user approved, and what changed (VERIFIED)
+
+* **Approved:** the **family of nine** thunk entries `837FD0F0, 837FD100, 837FD110, 837FD120,
+  837FD130, 837FD140, 837FD150, 837FD160, 837FD170`, each `end = start + 0x10`; last ends at
+  `0x837FD180`. **Withdrawn:** the Round-24 36-entry batch (see the WITHDRAWN banner in the Round 24
+  section).
+* **Both override copies changed, byte-identically:**
+
+  | | before | after |
+  |---|---|---|
+  | bytes | 15,040 | **16,464** |
+  | entries | 281 | **290** |
+  | SHA-256 | `802EE586D73B757573FDA264EC7D25BBA2EA2A3B0287E1E0DF69510773229DA1` | **`89B6D4D33BF11037FE259FEAA23175D0EE0276BC80F9A1032E7FA26A89A8B36E`** |
+
+  Copies: `D:\FWC10\world-cup-2010-pc-port\Installer\recomp-template\config\fifadllzf_overrides.toml`
+  and `C:\FWC10B\fwc10stage4\WorldCup2010Rex\config\fifadllzf_overrides.toml` (compared byte for
+  byte). The nine entries carry a comment block recording the evidence and the withdrawn batch.
+* **Backup:** `D:\FWC10\_backups\20261018-105001-r26` - `fifadllzf_overrides.{A,B}.{before,after}.toml`,
+  `NOTES.md.before`, `git-HEAD.txt`, `sdk-src-state.txt`, `SHA256SUMS.txt`, plus
+  `worldcup2010.exe.after` and `worldcup2010_register.after.cpp` (post-build). `LAST_BACKUP.txt`
+  appended twice (before-build, after-build).
+* **One rebuild:** `Installer\BuildWorldCup2010.ps1 -SourceBuild -Jobs 2`, **wall 607.9 s**,
+  `BUILD_EXIT_CODE=0`. (Round 24's reference was 446 s. No claim is made that the difference is
+  real: heavy Python analysis was running concurrently with this build, which is the obvious
+  candidate - **INFERRED**, not measured.)
+* **Every one of the nine new `sub_` is emitted** in the **fifadllzf** module
+  (`generated\fifadllzf_xex\`, timestamps 10:59:01-10:59:06) in
+  `worldcup2010_funcs.h`, `worldcup2010_init.cpp`, a `worldcup2010_recomp.NN.cpp`, and
+  `worldcup2010_register.cpp`:
+
+  ```
+  registrar->SetFunction(0x837FD0F0, sub_837FD0F0);   ... 0x837FD100, 0x837FD110, 0x837FD120,
+  0x837FD130, 0x837FD140, 0x837FD150, 0x837FD160, 0x837FD170   (register.cpp:78290-78298)
+  ```
+  and the rebuilt translation units are exactly those nine files (recomp .20/.45/.100/.122/.124/.153/.254/.279/.320).
+* The build's own second codegen pass printed `Codegen summary: 0 written, 2 unchanged, 0 deleted`
+  because the configure phase (`[3/6]`/`[4/6]`, phases `Register -> Scan -> Discover -> GapFill ->
+  Merge -> Validate -> Write`) had already written the generated code in the same run.
+
+### Item 1 - pre-application evidence for the nine (VERIFIED)
+
+Decode of the ten-thunk run (`0x837FD0E0..0x837FD180`), re-derived from the XEX image:
+
+| address | vtable slot | decode | state before |
+|---|---|---|---|
+| `0x837FD0E0` | `r12+0x0C` | `lwz r12,0(r3) / lwz r11,12(r12) / mtspr CTR,r11 / bctr` | already registered |
+| `0x837FD0F0` | `r12+0x1C` | `... lwz r11,28(r12) ...` | unregistered <- the crash |
+| `0x837FD100` | `r12+0x2C` | `... 44(r12) ...` | unregistered |
+| `0x837FD110` | `r12+0x3C` | `... 60(r12) ...` | unregistered |
+| `0x837FD120` | `r12+0x20` | `... 32(r12) ...` | unregistered |
+| `0x837FD130` | `r12+0x30` | `... 48(r12) ...` | unregistered |
+| `0x837FD140` | `r12+0x40` | `... 64(r12) ...` | unregistered |
+| `0x837FD150` | `r12+0x24` | `... 36(r12) ...` | unregistered |
+| `0x837FD160` | `r12+0x08` | `... 8(r12) ...` | unregistered |
+| `0x837FD170` | `r12+0x28` | `... 40(r12) ...` | unregistered |
+
+* All nine decode **exactly** `lwz r12,0(r3) / lwz r11,<slot>(r12) / mtspr CTR,r11 / bctr`; each
+  is **16 bytes** (terminator `bctr` at `+0xC`); the nine are consecutive with no gaps; the last
+  ends at `0x837FD180`.
+* **Boundaries:** the nearest registered entry below the run is `0x837FD0E0`, whose extent ends
+  **exactly** at `0x837FD0F0`. **No registered entry lies strictly inside**
+  `0x837FD0F0..0x837FD180`. **`0x837FD180` IS registered** (19-instruction leaf) and is **not** an
+  override start, so the family must stop before it.
+* **No overlap** of any of the nine 16-byte ranges with any registered extent, nor with any of the
+  281 applied override ranges. No `837FD0xx` entry existed before.
+* **Provenance audit of all 281 applied override entries** (the check the user asked for - did any
+  applied override come from the buggy `round24_scan3.py` `addi` handling?):
+
+  | provenance | count |
+  |---|---|
+  | address built by a real, sign-correct `lis`+`ori/addi` pair | **2** |
+  | address built **only** by the buggy arithmetic (`(hi<<16)\|low`, `dest == src == lis dest`) | **0** |
+  | no `lis`+`ori/addi` pair at all (added by the Stage 6b-6d `.rdata`/pointer-table method) | **279** |
+
+  The two pair-built entries are `0x83884CA0` (built at `0x836D3320`/`0x836D3324`, `hi=0x8388
+  lo=0x4CA0`) and `0x836A24B0` (built at `0x836BDC1C`/`0x836BDC24`) - both sign-correct. All 279
+  "other provenance" entries are now registered starts. **VERDICT: no applied override is
+  attributable to the buggy `addi` handling.**
+
+### Item 2 - apply, rebuild, boot, and the keys
+
+**Boot 1** (`worldcup2010_015.log`, unattended, `round24_run.ps1`): window at **1.2 s**, 1920x1080,
+title *2010 FIFA World Cup South Africa PC*; real frames (781-1066 distinct colours sampled);
+**exited at 83.1 s with `0xc0000409`** (our `assert_always` fail-fast).
+
+**The old crash is gone.**
+
+```
+[11:03:43.582] [error] [cpu] [t29144] INVALID INDIRECT CALL: target=8295FB50 LR=829658CC
+                                    CTR=8295FB50 r1=7088AA80 r2=828EBE00 r3=BB140E40
+                                    r11=8295FB50 r12=82969B40
+[11:03:43.582] [critical] [core] [t29144] [FATAL] Call to invalid or unregistered function at guest address 0x8295FB50
+```
+
+* `INVALID INDIRECT CALL at 0x837FD0F0`: **zero occurrences**. The new address is different.
+* The content/save ordinals resolved at **11:03:06.8 / 11:03:06.8 / 11:03:14.9** (`0x279`, `0x271`,
+  `0x270`), and the stop comes **29 s later** - Round 25 stopped **2 s** after the same resolves.
+* One on-demand commit, the same single startup page (`0x0006C000` on guest read `0x0006C6B8`).
+
+**Boot 2** (`worldcup2010_016.log`, `round26_run2.ps1`, late screenshots): **no crash at all** -
+killed at 200 s. 81 log lines; the log **stalls** after `d:\BigFile_CheckpointB` (70 s). Screenshots
+at 35 / 50 / 65 / 75 s all show the **title screen**: *2010 FIFA WORLD CUP SOUTH AFRICA(TM)* with
+**"PRESS START"** (blinking) and "© 2010 Electronic Arts Inc." So this boot was **parked waiting for
+input** and never reached the save-preparation path. Why Boot 1 advanced and Boot 2 did not is
+**not established** (INFERRED: an input/controller event in Boot 1); it is reported rather than
+explained.
+
+**Which keys to press (for the manual test).** The runtime logs a real **`Xbox Series X
+Controller`** being detected (`SDL OnControllerDeviceAdded`), so a gamepad works with no
+configuration. For the **keyboard**, note that `mnk_mode` **defaults to `false`**
+(`REXCVAR_DEFINE_BOOL(mnk_mode, false, ...)`, `src/input/mnk/mnk_input_driver.cpp:31`), so keys do
+nothing until it is enabled - via the **F4** settings overlay (`bind_settings`, `rex_app.cpp:417`),
+the command line (`--mnk_mode`, or `--no-<name>`/`--<name> true` per `include/rex/cvar_cli.h`), or
+`D:\FWC10\world-cup-2010-pc-port\dist\Output\worldcup2010.toml` with `mnk_mode = true`
+(the config path is `exe_dir / (<name> + ".toml")`, `src/ui/rex_app.cpp:~150`; it does not exist yet).
+With `mnk_mode` on, the default binds are:
+
+| pad | keys | pad | keys |
+|---|---|---|---|
+| **Start** | **`X` or `Enter`** | **A** | **`;` or `Space`** |
+| B | `'` or `Backspace` | X | `L` |
+| Y | `P` | Back | `Z` or `Tab` |
+| D-pad | `Shift`+arrows | left stick | `W` `A` `S` `D` |
+| right stick | arrows | LB / RB | `1` / `3` |
+| LT / RT | `Q` or `I` / `E` or `O` | L3 / R3 | `F` / `K` |
+
+Other runtime hotkeys: **F4** settings overlay, **Home** statistics overlay, **`** (backtick)
+console, **F7** achievements. **Navigation (INFERRED - not verified by hand):** on the title screen
+press **START** (`X`/`Enter`, or the controller's Menu button) to leave it, then confirm the
+language with **A** (`;`/`Space`), then move with the stick/D-pad to the **favourite-team** selection
+and confirm with **A**.
+
+### Item 3 - the XAM surface this game actually uses, and the save-device answer (VERIFIED, source-quoted)
+
+The game's **import tables** (from the read-only `D:\FWC10\xenia\xenia.log`, which Xenia prints per
+XEX) are the authoritative "what the game asks for". `default.xex`: `XamContentCreateEx` (601),
+`XamContentClose` (602), `XamContentCreateEnumerator` (604), `XamContentGetDeviceData` (606),
+`XamUserGetSigninInfo` (551), `XamUserGetSigninState` (528). `fifadllzf.xex`: the content family
+above plus `XamContentDelete` (603), `XamContentGetCreator` (610), `XamContentGetLicenseMask` (614),
+`XamContentGetDeviceState` (613), `XamUserReadProfileSettings` (**0x219**/537),
+`XamUserGetXUID` (522), `XamUserCreateAchievementEnumerator` (750), `XamUserCheckPrivilege` (530),
+`XamUserAreUsersFriends` (531), `XamUserGetName` (526), `XamUserGetSigninInfo`,
+`XamUserGetMembershipTierFromXUID` (535), `XamUserGetOnlineCountryFromXUID` (536),
+`XamShowSigninUI` (700), `XamShowAchievementsUI` (709), `XamShowMarketplaceUI` (711),
+`XamShowDeviceSelectorUI` (715), `XamShowDirtyDiscErrorUI` (729),
+`XamShowMarketplaceDownloadItemsUI` (743), the `XamInput*` family, `XamAlloc`/`XamFree`/`XamEnumerate`,
+etc. Resolved **dynamically** with `XexGetProcedureAddress` in our log:
+`0x00000279` -> `XamContentAggregateCreateEnumerator`, `0x00000271` -> `XamContentCreateInternal`,
+`0x00000270` -> `XamContentDeleteInternal`; at module load `0x00000AFF` -> `XamPartyGetUserList`,
+`0x00000B00` -> `XamPartySendGameInvites`, `0x00000B0B` -> `XamPartySetCustomData`,
+`0x00000B10` -> `XamPartyGetBandwidth`, `0x00000305` -> `XamShowPartyUI`,
+`0x0000030B` -> `XamShowCommunitySessionsUI` (names from `kernel/xam/export_table.inc`).
+
+**Implemented vs stub in our runtime** (`REX_EXPORT` = implemented, `REX_EXPORT_STUB` = stub):
+
+| export | ours | source |
+|---|---|---|
+| `XamContentCreateEx` / `CreateInternal` / `CreateEnumerator` | implemented | `xam_content.cpp:422 / 424 / 421` |
+| `XamContentClose` / `Delete` / `DeleteInternal` | implemented | `xam_content.cpp:427 / 431 / 432` |
+| `XamContentGetCreator` / `GetLicenseMask` | implemented | `xam_content.cpp:428 / 419` |
+| `XamContentAggregateCreateEnumerator` | implemented | `xam_content_aggregate.cpp:157` |
+| `XamContentGetDeviceName` / `GetDeviceState` / `GetDeviceData` / `CreateDeviceEnumerator` | implemented | `xam_content_device.cpp:175-178` |
+| `XamContentGetDefaultDevice` | **STUB** | `xam_content_device.cpp:183` |
+| `XamUserReadProfileSettings` / `GetXUID` / `GetSigninState` / `GetSigninInfo` / `GetName` | implemented | `xam_user.cpp:738 / 733 / 734 / 735 / 736` |
+| `XamUserCheckPrivilege` / `AreUsersFriends` / `CreateAchievementEnumerator` / `GetMembershipTierFromXUID` | implemented | `xam_user.cpp:742 / 751 / 753 / 774` |
+| `XamUserGetOnlineCountryFromXUID` **(imported!)** | **STUB** | `xam_user.cpp:775` |
+| `XamShowSigninUI` | implemented | `xam_user.cpp:752` |
+| `XamShowAchievementsUI` / `XamShowMarketplaceUI` / `XamShowMarketplaceDownloadItemsUI` **(all imported!)** | **STUB** | `xam_ui.cpp:586 / 635 / 631` |
+| `XamShowDeviceSelectorUI` / `XamShowDirtyDiscErrorUI` / `XamShowPartyUI` / `XamShowCommunitySessionsUI` | implemented | `xam_ui.cpp:570 / 571 / 572 / 573` |
+| `XamPartyGetUserList` / `SendGameInvites` / `SetCustomData` / `GetBandwidth` | implemented | `xam_party.cpp:47-50` |
+
+So **every content and user export this game imports is implemented**; the only stubs among its
+imports are `XamUserGetOnlineCountryFromXUID` and three `XamShow*UI` functions (presentation only).
+A `REX_EXPORT_STUB` is `REX_STUB`, which only logs - it **does not write r3**, so a stubbed call
+returns its first argument unchanged (`include/rex/hook.h:50-55`).
+
+**What the game sees when it asks for a save device, and what Xenia returns.** The game does **not**
+call `XamContentGetDefaultDevice` (it is not in either import table - so its being a stub is
+irrelevant here; Xenia's `xam_content_device.cc` has no implementation of it either). It uses
+`XamContentGetDeviceData` / `XamContentCreateEnumerator` / `XamContentGetDeviceState`, then
+`XamContentCreateEx`. Our implementations return a **dummy device table**
+(`xam_content_device.cpp:38-52`): **HDD** `id 1 / type 1(HDD)`, 20 GB total, **3 GB free**,
+`"Dummy HDD"`; **ODD** `id 2 / type 4(ODD)`, 7 GB, 0 free, `"Dummy ODD"`. So
+`XamContentGetDeviceState(1|2)` -> `X_ERROR_SUCCESS` and anything else ->
+`X_ERROR_DEVICE_NOT_CONNECTED`; `XamContentGetDeviceData(1)` -> those fixed numbers. Xenia's version
+of the same file is identical in shape with two differences: its **fallback** HDD claims **10 GB**
+free, and for a HDD it reports `content_manager()->GetContentTotalSpace()/GetContentFreeSpace()`
+(the real host disk) instead of the constants; and Xenia's `XamContentCreateDeviceEnumerator`
+**skips the ODD when `kExcludeReadOnlyDevices` is set**, which ours does not. A successful
+`XamContentCreateEx` in our runtime goes `xeXamContentCreate` -> `ContentManager::CreateContent` ->
+`ContentPackage`, which registers a `HostPathDevice` at **`\Device\Content\<n>\`** plus a symbolic
+link `<root_name>:` (`src/system/xam/content_manager.cpp:39-53`) - i.e. **a save would be a real
+host directory**, with the header written by `WriteContentHeaderFile`. **Xenia actually did this**:
+its log shows `~ContentPackage: Closing package: rmcsave (Device: \Device\Content\3\) Device
+mounted: Yes` (and `\Device\Content\4\`), and on disk
+`D:\FWC10\xenia\content\E03000007F393D8F\454108E4\00000001\WCSettings0 20261017134145\...`
+(494,349 B) with a 40,960 B `.header`. **Caveat (INFERRED):** our runs 013-016 contain **zero**
+content/save calls, so our save path has still never been exercised end-to-end.
+
+### Item 4 - the corrected (Round-25) candidate pool: **NOT APPLIED**
+
+The 36-entry batch is withdrawn (see the banner in the Round 24 section). The corrected pool from
+`round25_scan_candidates.json` (563 non-registered candidates -> 87 valid -> **12 tier A** = true
+gap, no static 32-bit occurrence, no jump-table dispatch before it) is **NOT APPLIED** and is listed
+here so it cannot be lost. `0x837FD0F0` is in this list and has since been applied as part of the
+nine-thunk family, so **11 of the 12 remain unapplied**:
+
+```toml
+# NOT APPLIED - corrected tier A (Round 25). Round 24's 36-entry batch is WITHDRAWN.
+"82AC37F8" = { end = 0x82AC3808 }   # applied in Round 26 (nine-thunk family)
+"837FD0F0" = { end = 0x837FD100 }   # <- applied in Round 26; the other 11 below are NOT
+"82ACD630" = { end = 0x82ACD648 }   # 6 insns
+"82EE77B0" = { end = 0x82EE77C4 }   # 5 insns
+"82FEF818" = { end = 0x82FEF830 }   # 6 insns
+"82685B18" = { end = 0x82685B34 }   # 7 insns
+"826AEAA0" = { end = 0x826AEAB8 }   # 6 insns
+"827B69B0" = { end = 0x827B69C0 }   # 4 insns
+"82ED2298" = { end = 0x82ED22B0 }   # 6 insns
+"837AC820" = { end = 0x837AC830 }   # 4 insns
+"82706360" = { end = 0x8270637C }   # 7 insns
+"83097038" = { end = 0x8309703C }   # 1 insn
+```
+
+(Only `82AC37F8`, `82EE77B0`, `82685B18`, `837FD0F0` are real tiers-colleagues-of-the-same-pattern;
+none has been validated as deeply as the nine just applied. **Do not apply without a fresh
+pre-application audit.**)
+
+### The new stop: analysis and the smallest proposed fix (**NOT APPLIED**)
+
+`0x8295FB50` is **not** a vtable dispatch thunk this time. Facts:
+
+* It is a **2-instruction tail fragment**: `0x8295FB50: li r4,1` / `0x8295FB54: b 0x8295F988`, i.e.
+  it re-enters the head of the function at `0x8295F988` with `r4 = 1`. Right after it, at
+  `0x8295FB58`, sits the **already-registered** twin `li r4,0 ; b 0x8295F988` (2 insns,
+  `0x8295FB58..0x8295FB60`).
+* The nearest registered entry below is `0x8295F988`, whose extent ends **exactly** at `0x8295FB50`;
+  the target is **not inside** any registered extent. The whole `0x8295F988..0x8295FB60` region is
+  tail-branch chained (no `blr` anywhere in it).
+* **The pointer table** (`0x823AF8E4..0x823AF95C`, 15 code-pointer/aux pairs) contains code pointers
+  `0x8295EBE8, 0x8295ECF8, 0x8295EDD0, 0x8295FB50, 0x82960300, 0x8295FCA8, 0x8295FC30, 0x8295FEF8, ...`
+  - **all are registered starts except `0x8295FB50`**, which is the crash target. That is
+  self-consistent, independent evidence that the analyzer missed exactly this one entry.
+* There is **no `lis`+`ori/addi` pair** that builds `0x8295FB50`; it occurs once in the image, as the
+  data word at `0x823AF8FC`.
+* Call site: `LR = 0x829658CC`, immediately after a four-level vtable walk
+  `lwz r11,20(r31) / lwz r11,4(r11) / lwz r11,0(r11) / lwz r11,16(r11) / mtspr CTR,r11 / bcctrl`.
+
+**Proposed smallest fix (NOT applied):** `"8295FB50" = { end = 0x8295FB58 }` - the 8-byte extent
+that ends exactly where the registered `0x8295FB58` begins. Honest caveat: the global scan for
+"other code-pointer words that are neither registered nor inside a registered extent" returns
+**28,040** hits, which is dominated by data that merely aliases the code range; that scan is
+**not** trustworthy and no family is proposed from it.
+
+### Verification vs inference (Round 26)
+
+* **VERIFIED:** the nine thunks' decode, 16-byte extents, boundaries, lack of overlap, and
+  `0x837FD180` being registered; the 281-entry provenance audit (2 pair-built, 0 buggy-provenance,
+  279 other); both override copies' sizes/hashes and byte-identity; the build wall time and exit
+  code; every new `sub_` emitted and registered in the fifadllzf module; the old crash's absence and
+  the new stop's exact address/registers in `015`; boot 2's no-crash and its title-screen
+  screenshots; the import tables and the implemented/stub split (source lines quoted); the dummy
+  device table and `\Device\Content\<n>\` backing; Xenia's `rmcsave` mount and on-disk `WCSettings0`;
+  the new target's shape, neighbours and unique table occurrence.
+* **INFERRED:** that the 607.9 s build is slower than Round 24's 446 s because of concurrent
+  analysis; that the new stop lies in the same `WCSettings0`-preparation flow (it follows the
+  ordinals by 29 s); that Boot 1 advanced because of an input/controller event; the exact key
+  sequence to the favourite-team screen; that the save path would work once reached (never called).
+
+### Round 26 artefacts
+
+`round26_item1.py` / `_out.txt` (nine-thunk + 281-audit evidence), `round26_apply.ps1` (backup +
+apply), `round26_two.py`, `round26_stop2.py` / `_out.txt` (new stop), `round26_stop2_region.py` /
+`_out.txt` (region disassembly), `round26_table.py`, `round26_family.py` / `_out.txt`,
+`round26_tierA.py` / `round26_tierA2.py` (corrected pool), `round26_showjson.py`,
+`round26_run2.ps1` (second boot), `round26_build.log`. Screenshots:
+`...\round24_shots\shot4_22s.png` (legal screen), `...\round26_shots\late_{35,50,65,75}s.png`
+(title screen). Backup:
+`D:\FWC10\_backups\20261018-105001-r26` with `SHA256SUMS.txt`.
+
+**Xenia was not run this round and `D:\FWC10\xenia` was not written to** (only `xenia.log` and
+`content\` were read); `C:\FWC10B\xenia_dbg` was not touched. **No crash dump or log was deleted**;
+`logs\worldcup2010_013..016.log` and the two dumps all remain.
+---
+
+## Round 27 (2026-10-18) - single override 0x8295FB50 applied; the crash is fixed; the game reaches gameplay
+
+**Box:** backup + one override change + **one rebuild** + one unattended boot + one driver test boot + no Xenia run.
+
+### What the user approved, and what changed (VERIFIED)
+
+* **Approved:** the single override entry `"8295FB50" = { end = 0x8295FB58 }` - an 8-byte tail fragment `li r4,1 ; b 0x8295F988` whose twin `0x8295FB58` (`li r4,0 ; b 0x8295F988`) is already registered and ends at its own `b`. Evidence from `round27_item1.py` / `item1b.py` / `item1c.py`:
+  - both halves decode to exactly 2 instructions (8 bytes each), adjacent and disjoint, both jump to `0x8295F988`;
+  - the registered twin `0x8295FB58` has extent `0x8295FB58..0x8295FB60`, ending at its own terminator `b`;
+  - the previous registered entry `0x8295F988` ends exactly at `0x8295FB50`; no registered entry lies strictly between them;
+  - the 15-record table at `0x823AF8E0..0x823AF958` is `{.data ptr (.data), .text code ptr}` pairs; 14 of 15 code pointers are registered starts; **only** unregistered code pointer is `0x8295FB50` (record 4, data ptr `0x83913364`);
+  - no overlap with any registered extent or with the 290 applied overrides; target not already an override start â†’ **SAFE**.
+
+* **Both override copies changed, byte-identically:**
+
+  | | before | after |
+  |---|---|---|
+  | bytes | 16,464 | **17,727** |
+  | entries | 290 | **291** |
+  | SHA-256 | `89B6D4D33BF11037FE259FEAA23175D0EE0276BC80F9A1032E7FA26A89A8B36E` | **`6DE35890AE9D8A6C5043CEDF56331D82040B15EDFFAB195A49B2F714E9D2B0F3`** |
+
+  Copies: `D:\FWC10\world-cup-2010-pc-port\Installer\recomp-template\config\fifadllzf_overrides.toml` and `C:\FWC10B\fwc10stage4\WorldCup2010Rex\config\fifadllzf_overrides.toml` (compared byte for byte).
+
+* **Backup:** `D:\FWC10\_backups\20261018-125321-r27` - `fifadllzf_overrides.{A,B}.{before,after}.toml`, `NOTES.md.before`, `git-HEAD.txt`, `sdk-src-state.txt`, `SHA256SUMS.txt`. `LAST_BACKUP.txt` appended.
+
+* **One rebuild:** `Installer\BuildWorldCup2010.ps1 -SourceBuild -Jobs 2`, **wall 422.9 s**, `BUILD_EXIT_CODE=0`. The new function `sub_8295FB50` is emitted in the **fifadllzf** module (`generated\fifadllzf_xex\`) in `worldcup2010_funcs.h` (DECLARE), `worldcup2010_init.cpp` (table entry), `worldcup2010_recomp.183.cpp` (body: `ctx.r4=1; sub_8295F988(ctx,base);`), and `worldcup2010_register.cpp:14415` (`SetFunction(0x8295FB50, sub_8295FB50)`). Registered entries: **87,195** (was 87,194).
+
+* **Boot 1 (unattended, 240 s, `worldcup2010_017.log`):** **NO CRASH** - 104 lines, zero `FATAL`/`INVALID INDIRECT`. The game loaded team/kit assets (hair, accessory, banner textures) and rendered a full 3D stadium (Norway vs Sweden). Screenshots at 20/40/60/80/100 s show progression from title â†’ team selection â†’ stadium. One on-demand commit (page `0x0006C000`).
+
+* **Boot 2 (driver test, 69.6 s, `worldcup2010_018.log`, `--mnk_mode`):** standalone input driver (`round27_input_driver.ps1`) launched the game with `--mnk_mode`, confirmed its own top-level window, **checked foreground before every send** (refused to type elsewhere), and sent:
+  1. `Return` (Start) â†’ title â†’ **team flag grid** (favourite-team screen)
+  2. `Return` â†’ language confirm
+  3. `Space` (A) â†’ select
+  4. `Shift+Down` (D-pad down)
+  5. `Space` (A) â†’ confirm
+  Screenshots saved to `round27_shots\`; driver log at `C:\Users\ramic\AppData\Local\Temp\opencode\round27_input_driver.log`. **Stop the driver:** Ctrl+C in its console, close the game window, or wait for `-MaxSeconds` (it kills the game and releases held keys).
+
+* **Xenia was not run** and `D:\FWC10\xenia` was not written to (newest write still `2026-10-17 14:44:51`); `C:\FWC10B\xenia_dbg` was not touched. **No crash dump or log was deleted**; `logs\worldcup2010_001..018.log` and all screenshots remain.
+
+### Verification vs inference (Round 27)
+
+* **VERIFIED:** the target/twin decode, registration status, table structure (15 records, data vs code sections), unique unregistered code pointer, no overlap; both override copies' sizes/hashes/byte-identity; the build wall time and exit code; the new `sub_` emitted/registered in four generated files; boot 1's 240 s no-crash and its asset-load/stadium screenshots; boot 2's driver test progression (screenshots confirm team-flag grid reached); the driver's foreground-check logic.
+* **INFERRED:** that the driver's key sequence is the "correct" one (it reached the favourite-team screen, but the exact menu depth wasn't verified by hand beyond that); that no further crashes will appear (the 240 s run is encouraging but not exhaustive); that the save-device path (never exercised) would work as implemented.
+
+### Round 27 artefacts
+
+`round27_item1.py` / `_out.txt` (core evidence), `round27_item1b.py` / `_out.txt` (every 4-byte word of the table), `round27_item1c.py` (section of each pointer), `round27_apply.ps1` (backup + apply), `round27_verify.py` / `_out.txt` (emission check), `round27_build.cmd` / `round27_build.log` (build), `round27_run.ps1` (unattended boot), `round27_input_driver.ps1` / `round27_input_driver.log` (driver + test boot), `round27_boot1_out.txt` (unattended boot transcript). Screenshots: `...\round27_shots\r27_{20,40,60,80,100}s.png` (unattended), `...\round27_shots\1352*_*.png` (driver test). Backup: `D:\FWC10\_backups\20261018-125321-r27` with `SHA256SUMS.txt`.
+
+---
+
+# Round 28 (2026-10-19) - throw-in crash triage, save-path audit, three diagnostic hunks
+
+**Box:** one timestamped backup, 10 per-file patches, **one rebuild**, **one unattended boot**.
+**No Xenia run**; `D:\FWC10\xenia` and `C:\FWC10B\xenia_dbg` were **read-only** (Xenia was not run at
+all). Every claim below is tagged **VERIFIED** (I read the bytes/source/log) or **INFERRED**.
+
+## The crash, re-read from `worldcup2010_019.log` (VERIFIED)
+
+```
+[22:50:25.395] Guest virtual read of 0x00000021 (host 0x0000000100000021) committed on demand
+               as page 0x00000000 (recommit); total 2          <- hidden by the workaround
+[22:50:25.402] INVALID INDIRECT CALL: target=82486704 LR=8333DB7C CTR=82486704
+               r1=7019E740 r2=00000000 r3=BE4545F8 r11=825227F8 r12=8333DB44
+```
+Same thread `t24456`, 7 ms apart; registered functions = 87,195.
+
+## Corrections to the Round-28 brief
+
+* **(a) ACCEPTED (VERIFIED).** `0x8333DB68 lwz r9,760(r30)` / `0x8333DB6C addi r3,r30,760` /
+  `0x8333DB70 lwz r8,20(r9)` / `0x8333DB74 mtctr r8` / `0x8333DB78 bcctrl`. `CTR` = **the value
+  stored at** `r9+20`. `0x82486704` is that stored value, **not** the address `r9+20`; `r9` was not
+  logged. Any earlier claim of the form "r9 = 0x824866F0" is **withdrawn**.
+* **(b) ACCEPTED (VERIFIED).** Bytes at `0x82486704` = `45 41 53 54 4C 20 62 61 …` =
+  `"EASTL basic_string"` (`.rdata`, repeated; preceded by `"LayoutData"` at `0x824866F8`). It is a
+  pointer to that string literal.
+* **(c) PARTLY WRONG - corrected (VERIFIED).** The function starts at `0x8333D4E0`, but the **next
+  registered start is `0x8333DCF8`**, and the **next `.pdata` record is also `0x8333DCF8`**
+  (`0x8262B078 -> 0x8333D4E0` with info `0x4002050B`, `0x8262B080 -> 0x8333DCF8`). The extent is
+  therefore `0x8333D4E0 .. 0x8333DCF8`, **not** `.. 0x8333DCD0` (which is 0x28 short of the end).
+  `LR=0x8333DB7C` is inside it at `+0x69C`, so the "inside-or-after" logic is unaffected.
+* **(d) CONFIRMED (VERIFIED from disk).** The old "enumerator added 0 items" observations predate the
+  first save; no log yet shows what the enumerator returns while six saves exist.
+* **(e) RETRACTED.** No Round-28 analysis depended on "the same assets fail in Xenia"; no Xenia run
+  was made and no Xenia line is quoted.
+
+## NEW deduction - `r30 = 0xBE454300` (VERIFIED arithmetic)
+
+At the trap `r3 = 0xBE4545F8` (logged). The instruction immediately before the call is
+`addi r3,r30,760` (`0x8333DB6C`) and nothing between it and the `bcctrl` writes `r3`. Therefore
+**`r30 = 0xBE4545F8 - 760 = 0xBE454300`**. `r30` was not logged; this recovers it. Also (VERIFIED):
+`r30` at the crash is **not** `parent+0x230` - it is overwritten at `0x8333DB04 mr r30,r3`, the return
+value of the virtual call at `0x8333DAF8` (slot `+8` of the object at `parent+0xE0`). The crashing
+call is `(&(call1_result + 0x2F8))->vtable[+0x14]`.
+
+## Task 1 - static crash analysis (`round28_t1.py`, `round28_t1b.py`)
+
+**_(i) cross-references to `0x82486704`._**
+
+* **Data-word occurrences** (32-bit big-endian `== 0x82486704`) in `.rdata`/`.pdata`/`.data`:
+  **NONE** (VERIFIED). No emulator-side static table slot points at the string.
+* **Code materialisation** (`lis` + sign-correct `addi`/`ori`, dataflow over `.text`): exactly **one**
+  site (VERIFIED):
+  ```
+  0x82F3BFD8  lis  r10,0x8248
+  0x82F3BFE0  addi r10,r10,0x6704      ; r10 = 0x82486704
+  ```
+  (A secondary literal scan reports two window matches, but both are the same `addi` preceded by the
+  two adjacent `lis r11`/`lis r10` at `0x82F3BFD4/D8`, so it is one site.)
+* **What builds the object** (function `0x82F3BFC8..0x82F3C080`, VERIFIED): it stores the other string
+  `0x82487D90` at `0(r3)`, stores `0x82486704` on the **stack** at `80(r1)`, sets `r5 = r1+0x50`, and
+  calls a constructor-like routine (`0x82F3C008`); it then fills a small array of `{0,0,0,nameptr}`
+  records (`24(r31)=0 … 64(r31)=0, 68(r31)=nameptr`). The string is materialised as a **name
+  argument**, never stored at a fixed `object+0x14`.
+* Consequence (INFERRED): the value at `(r9+20)` cannot come from static data, so it is a
+  runtime-written heap field. `r9` is a structure whose `+0x14` field is a `const char*` name (an
+  EASTL allocator/type-name string) - **not** a C++ vtable of the type the call expects.
+
+**_(ii) stores to `+0x2F8` and vtable installs (VERIFIED)._**
+
+* **70** stores with displacement 760 exist in `.text`. Exactly **3** store a pointer *constant*;
+  only **2** are genuine vtables:
+
+  | site | stored value | first words | all registered starts? |
+  |---|---|---|---|
+  | `0x82A4B8E4 stw r5,760(r31)` | `0x823C8460` (`.rdata`) | `82A53980 82A48060 82975CB8 …` | **yes** |
+  | `0x83088C14 stw r9,760(r15)` | `0x8308005E` (`.text`) | `7FA8EB78 80E10050 …` | no (code ptr, not a table) |
+  | `0x833C88D4 stw r9,760(r31)` | `0x8253E2EC` (`.rdata`) | `82A53980 833B3FD0 82A53940 …` | **yes** |
+
+  Neither real vtable has a data word at its `+0x14` slot.
+* **67 of 70** stores write a *heap pointer* (`stw r28/r29/r30/r31,…`) into `+0x2F8`, i.e. in most
+  types `+0x2F8` is a plain pointer field, not an embedded polymorphic object.
+
+**_(iii) stale / wrong type / unpopulated?_** **Not decidable from the image alone.** The evidence
+points at **wrong object type (or an unpopulated field)** rather than a dangling pointer, but that is
+INFERRED, not proven: `*(r9+0x14)` is a pointer to a name string only ever produced as a constructor
+name argument (i); and `r9` is **not** one of the image's two `+0x2F8` vtables (ii), so the object at
+`r30+0x2F8` is not one of those types, or its vptr was clobbered. **What would settle it:** the
+runtime values of `r30` and `r9`, the words at `r30+0x2F8` and around `r9` - exactly what **Hunk B**
+logs.
+
+**_(iv) callers of `sub_8333D4E0` (VERIFIED)._** `0x825362C4` (`.rdata`) `= 0x8333D4E0`, **slot 4** of
+a contiguous table at `0x825362B4..` (`8333CF80 83340908 8332EF30 8332F3F8 8333D4E0 83342A68 …`) whose
+every entry is a registered function start -> `sub_8333D4E0` is a **virtual method**. `0x8262B078`
+(`.pdata`) `= 0x8333D4E0`, the function's **unwind record**. The object passed is the `this` behind
+vtable `0x825362B4`, not identifiable from data alone; its role is named only from code (the crash
+frame chains virtual calls on `parent+0xE0` slot `+8`, then on `(result+0x2F8)` slot `+0x14`).
+
+**_(v) the null read of guest `0x21` (VERIFIED)._** No load with displacement `0x21` exists inside the
+LR function **or** inside any of its 12 distinct direct callees. The null read is therefore deeper (an
+indirect/virtual callee) or elsewhere on the same thread; the single `LR` does not pin the
+instruction. The original AV is absent from the log because the `kGuestVirtual` on-demand-commit
+workaround committed page 0 and resumed - **Hunk A restores the fatal path** so the AV and its
+register state now appear.
+
+## Task 2 - why the game may not see its saves (source audit, no build)
+
+* **Our content root** = `C:\Users\ramic\Documents\worldcup2010` (VERIFIED chain: no `user_data_root`
+  cvar; `rex_app.cpp` uses `GetUserFolder()/GetName()`; `GetName() == "worldcup2010"`).
+* **Our aggregate enumerator** (`src\kernel\xam\xam_content_aggregate.cpp:82-151`, VERIFIED) uses the
+  **caller's `xuid` verbatim** (no `-1 -> 0` normalisation), **ignores the 4th argument** (our named
+  `unk3`; Xenia names it `title_id`), scans `root/<xuid>/<title>/<type>/`, and fills each item from
+  `Headers/<type>/<name>.header` when present.
+* Disk facts (VERIFIED): our store holds **six** saves under `B13EBABEBABEBABE\454108E4\00000001\`
+  with matching `Headers\00000001\*.header`; **Xenia's** single save is in a *different* store
+  (`D:\FWC10\xenia\content`) under a *different* XUID (`E03000007F393D8F`).
+* Therefore Xenia's save is invisible to us for two independent reasons (store + XUID), **and** our
+  own six saves sit exactly where `ListContent` scans. The premise "the game cannot find its saves" is
+  **not demonstrated** by the source or the disk.
+* The one decisive unknown is the `xuid`/`device_id`/`content_type`/`title_id` the game actually
+  passes - it is not in the log. **Hunk C** logs those arguments and the resulting item count at INFO,
+  which settles it.
+
+## Task 3 - patches (separate per-file diffs in `patches\`)
+
+Each carries a BSD-3 header and an off switch (`ROUND28_HUNK_A`, `ROUND28_HUNK_B`, `ROUND28_HUNK_C`;
+pass `-D<name>=0` to compile the hunk out - each `.cpp` also has an `#ifndef` default of 1).
+
+| patch | target | SHA-256 (patch) |
+|---|---|---|
+| `round28-A-src_system_xmemory.cpp.patch` | `src/system/xmemory.cpp` | `370E22BB205B07D8F2BD43EA587B83186CADAF1653CB02BB47425164BFBC13E2` |
+| `round28-B-include_rex_system_function_dispatcher.h.patch` | `include/rex/system/function_dispatcher.h` | `3FE36A39059E8512EEF09FDCA9FC67F42CC3BAEFED7489BEA1D93F1D9B3DDAC9` |
+| `round28-B-src_system_function_dispatcher.cpp.patch` | `src/system/function_dispatcher.cpp` | `FB95B47D671BBF4361261D627E077232EE2414EBBBAB12D506BA9FD42A478A49` |
+| `round28-B-src_system_xmemory.cpp.patch` | `src/system/xmemory.cpp` | `226C255269F6F3B87E62B3EEAE130E042F7BA5E6D200923C02CB53105F9C5736` |
+| `round28-C-src_kernel_xam_xam_content.cpp.patch` | `src/kernel/xam/xam_content.cpp` | `3D3AB0F4B0980ED69A52709592FACF11BA4DD236B1D08467DB96405BD4C48FF3` |
+| `round28-C-src_kernel_xam_xam_content_aggregate.cpp.patch` | `…xam_content_aggregate.cpp` | `A20074F8B1AB5102633D29B132257D3FD78E6B73B36D9A088849559C80E285F8` |
+| `round28-C-src_kernel_xam_xam_content_device.cpp.patch` | `…xam_content_device.cpp` | `E7619C9C25301BF2D82F2DB75A36CC18A2CE2AB30A476F899E1938C371F60FA9` |
+| `round28-C-src_kernel_xam_xam_ui.cpp.patch` | `…xam_ui.cpp` | `796A4CC3A4248A5561826C68030BEB12A8D3DB3D4895F132A6EC419588755FB3` |
+| `round28-C-src_kernel_xam_xam_user.cpp.patch` | `…xam_user.cpp` | `46A258223DD75E4D46D5741E2660DDB53978BAAA102C383772F8F66BBA4241A5` |
+| `round28-C-src_system_xam_content_manager.cpp.patch` | `src/system/xam/content_manager.cpp` | `675F5A3DDD6751DFAE1A5563F2B2135AFBAFF71FC592FB8C0F56E5AC69B9D4B5` |
+
+* **A** - in `Memory::AccessViolationCallback`, refuse the on-demand commit when
+  `fault_page < 0x10000`, log `Null-page access: … refusing on-demand commit below 0x10000; falling
+  through to the fatal path`, and let the existing fatal path run. Addresses `>= 0x10000` (including
+  the `0x6C000` first-touch case) are unchanged.
+* **B** - `Round28DumpGuestContext()` (shared by the invalid-indirect-call trap and the guest-AV
+  handler) prints **all** `r0..r31`, `LR`, `CTR`, the nearest registered function below `LR`
+  (`FunctionDispatcher::FindContainingFunctionStart`, a sort + binary search over the same table the
+  dispatcher registers from `PPCFuncMappings`), the module base, and a bounded 64-byte,
+  **page-commit-checked** hex dump of `r3,r8,r9,r11,r30,r31` and of each pointee.
+* The lookup was **validated** against statically-known pairs (`round28_lookup_check.py`):
+  `0x8333DB7C -> 0x8333D4E0 (+0x69C)`, `0x8333D5A0 -> 0x8333D4E0 (+0xC0)`,
+  `0x8333DB68 -> 0x8333D4E0 (+0x688)` - all OK. **Nearest-lower cannot prove containment** (an
+  address in a gap still returns the previous start); the dump prints the offset and warns when it
+  exceeds `0x40000`.
+* **C** - INFO tracing (`ROUND28C `) of `XamContentCreateEnumerator` /
+  `XamContentAggregateCreateEnumerator` (args + item count), `xeXamContentCreate` (root, flags,
+  type/title/xuid, disposition, result), `XamContentCreateEx/Internal`, `XamContentClose`,
+  `XamContentDeleteInternal`, `XamContentGetDeviceData/State`, `XamUserRead/WriteProfileSettings`,
+  `XamUserGetSigninState`, `XamShow{MessageBox,DeviceSelector,DirtyDisc}UI`, and
+  `ContentManager::ListContent` (scanned root, each item's name + header-read result, total count) +
+  `OpenContent` (path, exists).
+* `git apply --check` on a pristine copy of every touched file: **all 10 OK**. (The first build
+  exposed `uint32_t(be<XContentType>)` casts in `xam_content.cpp`; fixed to `.get()`, patches
+  regenerated, re-checked, re-applied.)
+
+## Task 4 - build + boot
+
+* **Backup:** `D:\FWC10\_backups\20261019-095738-r28` - `files\` holds the pre-patch content of all
+  9 touched files; the 10 `round28-*.patch`; `git-HEAD.txt`, `git-status-porcelain.txt`,
+  `SHA256SUMS.txt`, `README.txt`. `LAST_BACKUP.txt` appended.
+* **Rebuild:** `Installer\BuildWorldCup2010.ps1 -SourceBuild -Jobs 2` (via `round28_build.cmd`).
+  First attempt failed on the `be<XContentType>` cast (above); after the fix the rebuild succeeded,
+  and all Round-28 files compiled without error.
+* **Boot (unattended, 150 s, killed at the cap):** `dist\Output\logs\worldcup2010_020.log` (plus
+  rotations `.1`, `.2`; the logger caps a file at 5 MB), 10:15:26 -> 10:17:56. Five screenshots at
+  20/40/60/90/120 s (`round28_shots\r28_*.png`). **No `FATAL`, no `INVALID INDIRECT CALL`, no
+  `Null-page access`, no `ROUND28 guest context`** - the game sat at the title/menu (no hand input),
+  so hunks **A** and **B** produced no output. That is expected: the throw-in crash needs hand-played
+  gameplay.
+* **Hunk C is live** and the content/store trace ran. **The save problem is now explained (VERIFIED
+  from the log):**
+
+  ```
+  [10:15:27] XamContentCreateEnumerator user_index=254 content_type=00000002 ... -> items=0
+             (ListContent scanned xuid=B13EBABEBABEBABE, i.e. the runtime xuid)
+  [10:16:09] XamShowDeviceSelectorUI user_index=0 content_type=00000001 ... -> device_id=0x00000001
+  [10:16:09] XamContentAggregateCreateEnumerator args xuid=00000000BABEBABE device_id=1
+             type=00000001 unk3(title_id?)=00000000 runtime_xuid=B13EBABEBABEBABE
+             ListContent scan xuid=00000000BABEBABE type=00000001 title_id=454108E4
+               root='C:\Users\ramic\Documents\worldcup2010\00000000BABEBABE\454108E4\00000001'
+               -> 0 item(s)
+             XamContentAggregateCreateEnumerator xuid=00000000BABEBABE ... -> items=0
+  [10:16:09] xeXamContentCreate root='rmcsave' flags=00000034 type=00000001 title_id=454108E4
+             xuid=B13EBABEBABEBABE resolved_xuid=B13EBABEBABEBABE
+             xeXamContentCreate root='rmcsave' disposition=1 -> result=0x00000000
+  [10:16:40] XamContentDeleteInternal type=00000001 title_id=454108E4 -> 0x00000000
+  ```
+
+  **The game enumerates user content for xuid `0x00000000BABEBABE`, but our content lives under
+  `0xB13EBABEBABEBABE`.** The directory `…\Documents\worldcup2010\00000000BABEBABE\…` does not exist
+  (VERIFIED: only `B13EBABEBABEBABE` and `cache` exist), so `ListContent` returns **0 items** and the
+  game concludes there are no existing saves. `xeXamContentCreate` then **creates** `rmcsave` (flags
+  `0x34` -> disposition `Create`) with `resolved_xuid=B13EBABEBABEBABE`, i.e. the write path and the
+  read path use **different** XUIDs. The game then deletes and recreates - the "saves issue".
+* **Where the game's `0x00000000BABEBABE` comes from is OPEN (INFERRED):** it is exactly the **low 32
+  bits** of our hard-coded `0xB13EBABEBABEBABE` with the high dword zero, i.e. a 32-bit-truncated copy
+  of our XUID. Both branches of our `XamUserGetXUID_entry` and our signin info return the full 64-bit
+  value, so the truncation is somewhere between our XAM user APIs and the game. This needs one more
+  log line on `XamUserGetXUID` / `XamUserGetSigninInfo` before any fix.
+* **Volume defect found (VERIFIED):** Hunk C logs `XamUserGetSigninState`, which the game polls **every
+  frame from several threads**. In 150 s that produced **8,981 lines / 11.45 MB across three rotated
+  files** and buried the real content lines. Patch C as applied does **not** satisfy "cap the volume"
+  for this call; the intended fix (log only when the value changes) is **not yet applied**.
+
+## Verification vs inference (Round 28)
+
+* **VERIFIED:** the crash log lines and thread/timing; the four `lis`/`lwz`/`mtctr`/`bcctrl`
+  instructions and `r30` recovery; the string bytes and section; the absence of any data-word
+  reference and the single materialisation site; the 70/3/2 `+0x2F8` store/vtable counts and both
+  vtable dumps; the `.pdata` next-record and registered-next-start both being `0x8333DCF8`; the
+  `.rdata` vtable slot `0x825362C4`; the absence of a `0x21`-displacement load in the LR function and
+  its 12 direct callees; the content-root resolution and the enumerator's argument handling; the disk
+  layout of both stores; all 10 patch hashes and the clean `git apply --check`; the rebuild result.
+* **INFERRED:** that `r9` is a name-descriptor rather than a real vtable (static evidence is strong
+  but not conclusive); that the null-read instruction is in a virtual callee (not pinned); the origin
+  of the game's `0x00000000BABEBABE` (a 32-bit truncation of our XUID is the leading hypothesis, not
+  proven).
+* **Boot (VERIFIED):** the Round-28 markers are present in the rebuilt `rexruntime.dll`; the run
+  reached the title/menu with **no** FATAL/AV/indirect-call (so A/B were not exercised); the save
+  trace shows the enumerator querying xuid `0x00000000BABEBABE` (0 items) while create uses
+  `0xB13EBABEBABEBABE`; the `XamUserGetSigninState` poll volume (8,981 lines / 11.45 MB in 150 s).
+
+## Open questions / next approval
+
+1. **Stale vs wrong-type** for `r30+0x2F8` cannot be chosen statically; the Hunk-B dump, once the user
+   reproduces a throw-in by hand, decides it.
+2. **Save bug - root cause found, fix NOT applied.** The game enumerates content for xuid
+   `0x00000000BABEBABE` while we store it under `0xB13EBABEBABEBABE` (boot log, above). Candidates,
+   none applied: (a) find and fix the 32-bit truncation of our XUID so the game receives the full
+   value - needs one log line on `XamUserGetXUID`/`XamUserGetSigninInfo` first; (b) normalise the
+   aggregate enumerator's xuid the way Xenia does. The user asked to stop after the boot report, so
+   this is **for approval**.
+3. **Hunk C volume.** `XamUserGetSigninState` must log **on change only**; as applied it rotates 5 MB
+   log files within seconds. **Not applied** (the one-rebuild rule was honoured).
+4. Hunk A may make the null read **fatal sooner**, so a run can stop earlier than the throw-in. That
+   is intended: the next step is to read *where* it stops, not to re-enable the silent commit.
+
+## Round 28 artefacts
+
+All under `C:\Users\ramic\AppData\Local\Temp\opencode\`: `round28_genpatch.py` (patch generator),
+`round28_lookup_check.py` (lookup validation), `round28_t1.py`/`round28_t1_out.txt` and
+`round28_t1b.py`/`round28_t1b_out.txt` (static analysis), `round28_build.cmd` / `round28_build.log`
+(build), `round28_run.ps1` (boot). Patches: `D:\FWC10\world-cup-2010-pc-port\patches\round28-*.patch`.
+Backup: `D:\FWC10\_backups\20261019-095738-r28`.
+
+
+# Round 29 (2026-10-19) - the XUID is truncated by *our own* argument marshaller; save-path shim + XUID/sign-in tracing
+
+**Box:** one timestamped backup (`D:\FWC10\_backups\20261019-104335-r29`), **5 per-file patches**
+(`patches\round29-*.patch`), **one rebuild**, **one unattended 150 s title-screen boot**
+(`worldcup2010_022.*`). **Hunks A and B of Round 28 were not touched.** Every claim is **VERIFIED**
+(bytes/source/log actually read) or **INFERRED**.
+
+## Headline 1 (VERIFIED): the save bug is a ReXGlue ABI bug, not a game bug
+
+Round 28 established from the log that the title *enumerates* content under
+`…\00000000BABEBABE\…` (**0 items**) while it *creates* its save under `…\B13EBABEBABEBABE\…`.
+Round 29 finds the truncation and proves it is ours.
+
+**1. The guest passes a correct 64-bit XUID** (VERIFIED, guest disassembly of
+`xexdump\fifadllzf.dec.bin`, script `round29_t1_dis.py`). `fifadllzf` reaches the aggregate
+enumerator (xam ordinal **0x279**, lazily resolved into the slot at **`0x83C6402C`**) from
+`sub_8319C5D0`:
+
+```
+0x8319C5DC  li  r11,-1
+0x8319C5E8  std r11,80(r1)        ; xuid slot := -1
+0x8319C610  lis r11,-31834        ; 0x83C60000
+0x8319C614  li  r3,633            ; 0x279 = XamContentAggregateCreateEnumerator
+0x8319C618  addi r30,r11,16428    ; r30 = 0x83C6402C  (lazy-resolve slot)
+0x8319C620  bl  sub_8319C170      ; resolve(xam!0x279, &0x83C6402C)
+0x8319C640  bl  0x838D7E5C        ; XamUserGetXUID(user_index=r29, type_mask=1, ptr=r1+80)
+0x8319C654  lwz r11,0(r30)        ; resolved enumerator entry point
+0x8319C660  ld  r3,80(r1)         ; *** FULL 64-bit load of the XUID -> arg1 ***
+0x8319C664  mr  r5,r31            ; content_type
+0x8319C668  mr  r4,r27            ; device_id
+0x8319C66C  mtctr r11
+0x8319C670  bctrl                 ; aggregate enumerator; guest LR = 0x8319C674
+```
+
+`ld` is the **64-bit** load, so `r3` really does hold all 64 bits. The runtime confirmed this guest
+address independently: `ROUND29D XamContentAggregateCreateEnumerator caller=0x8319C674 …` (see
+below) - the LR predicted statically is exactly the LR observed at run time.
+
+**2. Our marshaller forwards only `r3`'s low 32 bits** (VERIFIED, source).
+`include/rex/ppc/function.h`:
+
+```cpp
+  static constexpr uint64_t GetIntegerArgumentValue(const PPCContext& ctx, uint8_t* base,
+                                                    size_t arg) noexcept {
+    if (arg <= 7) {
+      switch (arg) {
+        case 0:
+          return ctx.r3.u32;      // <-- 32-bit read, zero-extended to uint64_t
+        case 1:
+          return ctx.r4.u32;      // ... r5/r6/r7/r8/r9/r10 likewise
+```
+
+`ArgTranslator::GetValue<T>()` routes every plain integer (`u64 = uint64_t`) through this helper, so
+`XamContentAggregateCreateEnumerator_entry(u64 xuid, …)` is handed `0x00000000BABEBABE` when `r3` is
+`0xB13EBABEBABEBABE`. The defect is **general** (every 64-bit integer argument of every export); it
+only bites when the value exceeds 32 bits, which is precisely the XUID.
+
+**3. Every log line is consistent with this** (VERIFIED):
+
+* `ROUND28C XamContentAggregateCreateEnumerator args xuid=00000000BABEBABE … runtime_xuid=B13EBABEBABEBABE`
+  - a *register* argument is truncated, a value read from the profile inside our code is not.
+* `ROUND28C xeXamContentCreate root='rmcsave' … xuid=B13EBABEBABEBABE resolved_xuid=B13EBABEBABEBABE`
+  - the content-data XUID comes out of **guest memory** (a `be<uint64_t>` field), so it is never
+  marshalled and stays correct; the create path also uses the profile XUID directly.
+
+**Conclusion VERIFIED by three independent routes** (guest disassembly, marshaller source, run-time
+log): the truncation happens in **our runtime**, not in the game. **INFERRED**: on a real console
+(and in Xenia) the guest's full register value reaches XAM, so neither sees this.
+
+## Headline 2 (VERIFIED): the shim repairs the enumeration
+
+```
+ROUND29D xuid shim[aggregate-enumerator]: requested=00000000BABEBABE -> profile_xuid=B13EBABEBABEBABE
+         (upper 32 bits zero, lower 32 bits match) caller=0x8319C674
+ROUND29D XamContentAggregateCreateEnumerator caller=0x8319C674 xuid_in=00000000BABEBABE xuid_used=B13EBABEBABEBABE
+ROUND28C XamContentAggregateCreateEnumerator xuid=B13EBABEBABEBABE device_id=1 type=00000001 -> items=8
+ROUND28C XamContentAggregateCreateEnumerator xuid=B13EBABEBABEBABE device_id=0 type=00000001 -> items=8
+```
+
+and the create that follows is now an **open of an existing save** instead of a create:
+
+| run | `xeXamContentCreate` | disposition | result |
+|---|---|---|---|
+| Round 28 (`020`) | `root='rmcsave' flags=00000034` | `disposition=1` (Create) | `0x00000000` |
+| Round 29 (`022`) | `root='rmcsave' flags=00000033` | `disposition=2` (Open) | `0x00000000` |
+
+No new save directory was created by the Round-29 boot, and **no file in the content store was
+modified** (newest mtime still `10-19 10:24`); the store still holds exactly the **8**
+`WCSettings0 …` saves. In every previous boot the title created a *fresh* save, because it could not
+see the old ones.
+
+## Xenia comparison (VERIFIED, read from xenia-canary `canary_experimental`)
+
+Xenia has no truncated-XUID case to normalise. Its only mapping on this path is the all-ones
+sentinel - `src/xenia/kernel/xam/xam_content_aggregate.cc`:
+
+```cpp
+dword_result_t XamContentAggregateCreateEnumerator_entry(qword_t xuid, …) {
+  …
+    auto content_datas = kernel_state()->content_manager()->ListContent(
+        static_cast<uint32_t>(DummyDeviceId::HDD),
+        xuid == -1 ? 0 : static_cast<uint64_t>(xuid), title_id,
+        content_type_enum, XContentFlag::kNone);
+```
+
+`qword_t` is forwarded by Xenia's shim layer as the **full 64-bit** register value, so `xuid == -1`
+is all the special-casing it needs. Our shim (low-32 match -> profile XUID) exists **because** our
+argument path loses the high half - it is a workaround for a ReXGlue defect, not a Xenia behaviour
+being copied. The profile XUID was **not** changed and no Xenia save file was copied.
+
+Two further Xenia/ReXGlue differences noticed while reading (not bugs for this title, RECORDED):
+`XamUserGetSigninInfo` - Xenia writes `info->xuid` only when
+`!flags || flags & X_USER_GET_SIGNIN_INFO_OFFLINE_XUID_ONLY`, our copy always writes it (FIFA 10 calls
+it with `flags = 0`, so behaviour is identical); `XamUserGetXUID` - Xenia returns early with `0` and
+`X_E_NO_SUCH_USER` for a non-signed-in index, ours goes through `user_profile->type() & type_mask`
+and can return `X_E_SUCCESS` with `xuid = 0`.
+
+## Task 1 - logging for `XamUserGetXUID` / `XamUserGetSigninInfo`
+
+Both exports now log the value written, the **guest caller**, and the **guest address the guest reads
+it back from** (patch `round29-D4-…xam_user.cpp.patch`). 46 `ROUND29D` lines in the whole 150 s run,
+43 of them distinct - no spam. What they revealed:
+
+* `XamUserGetXUID user_index=0 type_mask=1 -> 0x00000000 xuid=B13EBABEBABEBABE written_to=0x708EF780
+  caller=0x8319C644` - **caller `0x8319C644` is the return address of the `bl` at `0x8319C640`
+  inside `sub_8319C5D0`**, and `written_to=0x708EF780` is that function's `r1+80`. So **the reader is
+  `sub_8319C5D0` itself**: it re-loads the XUID with the 64-bit `ld r3,80(r1)` at `0x8319C660` and
+  passes it straight in as arg1 of the aggregate enumerator. Nothing on that path re-reads it with a
+  32-bit `lwz`; the loss happens **after** the guest sets `r3`, in our marshaller.
+* the other save-path caller is `0x8319C414` (same wrapper family, the create side); other callers are
+  `0x8319BD00` (user enumeration, `type_mask=7`) and `0x831E76AC` (`type_mask=2`).
+* for `user_index = 1..3` the export returns `0x80070525` (`X_E_NO_SUCH_USER`) with `xuid = 0`, so
+  only index 0 is ever a real XUID.
+* `XamUserGetSigninInfo user_index=0 flags=00000000 -> X_E_SUCCESS xuid=B13EBABEBABEBABE
+  written_to=0x708EF550 caller=0x8319B948` (also seen from `0x820FB4F8`, and once with `flags=2`).
+
+## Task 2 - per-frame log volume: **the cap did NOT work; this is a defect in my patch**
+
+Requirement: `XamUserGetSigninState` must log only when its returned value changes. As built it still
+logs essentially every call:
+
+| | R28 boot (`020`, 150 s) | R29 boot (`022`, 158 s) |
+|---|---|---|
+| log files | 3 | 4 |
+| bytes | 11,455,643 | 16,439,480 |
+| `ROUND28C` lines | 105,911 | 108,150 |
+| of which `XamUserGetSigninState` | 105,860 | **107,936** |
+
+**Cause (VERIFIED by reading my own patch):** I keyed the "changed?" test on a single
+`(last user_index, last value)` pair. The title polls the four indices **round-robin**
+(`0,1,2,3,0,1,2,3,…`), so the remembered index never equals the current one and the condition is
+always true. The new suffix is even misleading: every one of those line says
+`(value changed; per-call repeat suppressed)` although the value did not change. Raw log:
+
+```
+11:03:25.479 user_index=2 -> 0x00000000 (value changed; per-call repeat suppressed)
+11:03:25.482 user_index=3 -> 0x00000000 (value changed; per-call repeat suppressed)
+11:03:25.484 user_index=0 -> 0x00000001 (value changed; per-call repeat suppressed)
+11:03:25.484 user_index=1 -> 0x00000000 (value changed; per-call repeat suppressed)
+11:03:25.489 user_index=0 -> 0x00000001 (value changed; per-call repeat suppressed)
+```
+
+**Fix (not applied - it needs one more rebuild, which Round 29's budget did not allow):** keep one
+slot **per user index** instead of one global slot, e.g.
+
+```cpp
+    static bool     r29_seen[4]       = {};
+    static uint32_t r29_last_state[4] = {};
+    bool changed;
+    if (user_index < 4) {
+      changed = !r29_seen[user_index] || r29_last_state[user_index] != signin_state;
+      if (changed) { r29_seen[user_index] = true; r29_last_state[user_index] = signin_state; }
+    } else { … one extra slot for out-of-range indices … }
+    if (changed) R28C_LOG(…);
+```
+
+With that, a 150 s title-screen run should emit **4** `XamUserGetSigninState` lines (one per index,
+all values constant), i.e. ~105,000 fewer lines, and the log set should drop from ~16.4 MB to
+well under 1 MB. No other per-frame call needed capping: in the 191 s run `worldcup2010_021` every
+other `ROUND28C` message was <= 32 occurrences (`ListContent` 32, aggregate/create/enumerator 4 or
+fewer, the rest 1-2).
+
+## Task 3 - the shim
+
+`Round29ResolveXuid(requested, site)` (`src/system/xam/content_manager.cpp`, declared in
+`include/rex/system/xam/content_manager.h`): when the requested XUID has a **zero upper 32 bits** and
+its **low 32 bits equal the current profile XUID's low 32 bits**, it returns the profile XUID;
+otherwise the requested value unchanged. Applied to:
+
+| path | site tag | value shimmed | observed |
+|---|---|---|---|
+| `XamContentAggregateCreateEnumerator_entry` | `aggregate-enumerator` | the marshalled `xuid` argument | **substituted twice** (`00000000BABEBABE -> B13EBABEBABEBABE`) |
+| `XamContentCreateEnumerator_entry` | `create-enumerator` | the profile-derived XUID (identity) | unchanged x4 |
+| `xeXamContentCreate` | `content-create-data` | `content_data.xuid` from guest memory | unchanged x1 |
+
+Every call logs `ROUND29D xuid shim[<site>]: requested=… -> profile_xuid=… (upper 32 bits zero, lower
+32 bits match) caller=0x…`, or `… unchanged caller=0x…`. **Off switch:** the `round29_xuid_shim` cvar
+(defined in `content_manager.cpp`, default `true`) disables substitution; the whole hunk compiles out
+with `-DROUND29_HUNK_D=0`. The profile XUID is unchanged; no Xenia save file was copied.
+
+## Task 4 - backup, patches, rebuild, boot
+
+* Backup `D:\FWC10\_backups\20261019-104335-r29`: the 5 pre-patch files under `files\`, the 5
+  patches, `git-HEAD.txt`, `git-status-porcelain.txt`, `README.txt`, `SHA256SUMS.txt`.
+  `_backups\LAST_BACKUP.txt` updated both before and after the rebuild.
+* Per-file patches, each `git apply --check` **OK** on a pristine copy of the pre-Round-29 tree:
+
+| patch | SHA-256 |
+|---|---|
+| `round29-D1-include_rex_system_xam_content_manager.h.patch` | `BA3B60BEC30EF858812C89E3F0D1CE903A9828DADC5D629B21161AA43250D483` |
+| `round29-D2-src_system_xam_content_manager.cpp.patch` | `9E6D3326752BA54B6923A118D2306EBB58A81A53C3618372A498470E67909C68` |
+| `round29-D3a-src_kernel_xam_xam_content_aggregate.cpp.patch` | `64389AF8F6AE40B1486B655E3BEF48D043D5EF7DCBA18E860C65D6C31E191BD5` |
+| `round29-D3b-src_kernel_xam_xam_content.cpp.patch` | `D96706CEDD84AE7097263C833CB9D4F3DE57F1C84CCA06E45D31548FE80DC645` |
+| `round29-D4-src_kernel_xam_xam_user.cpp.patch` | `10F46BD6C32CC33409C37765BCD12CA7E55B1FB8E7FEB7683BC2F14A1F90CA0F` |
+
+  Pre-patch SHA-256 of the five targets: `content_manager.h` `6990884D…6B01C4`,
+  `content_manager.cpp` `FD61FD12…E46EF7`, `xam_content_aggregate.cpp` `EBC4755F…888859`,
+  `xam_content.cpp` `BF725697…A59D08F`, `xam_user.cpp` `221D9362…E38EA55`.
+* The four touched translation units were compiled first (`round29_precheck.cmd`, exit 0), then the
+  single rebuild: **`BUILD_EXIT_CODE=0`**, `rexruntime.dll` **10,187,776 B** at `10:48:16`.
+* New strings in the built runtime (VERIFIED by byte search): `ROUND29D ` x7, `xuid shim[` x2,
+  `round29_xuid_shim` x2, `aggregate-enumerator`, `create-enumerator`, `content-create-data`,
+  `written_to=0x` x2, `per-call repeat suppressed`, `Round29ResolveXuid` x2.
+* Boot `11:01:45 -> 11:04:23` (158 s wall, killed by the harness cap; screenshots at
+  20/40/60/90/120/150 s, `round29_shots\`), windowed title screen, **zero** occurrences of
+  `Null-page access`, `Unhandled guest access violation`, `INVALID INDIRECT CALL`,
+  `ROUND28 guest context`, `nearest registered function`, `FATAL`, `TRAP`.
+
+### Boot results
+
+* **Log volume:** 4 files, **16,439,480 B**, 108,150 lines. The cap did **not** take effect (Task 2
+  above): `XamUserGetSigninState` is still 107,936 of those lines; the ROUND29D tracing contributed
+  only 46 lines.
+* **XUID lines:** 43 distinct, listed in Tasks 1 and 3; the decisive ones are the shim substitution
+  at `caller=0x8319C674` and `XamUserGetXUID … caller=0x8319C644 written_to=0x708EF780`.
+* **Enumerator scan result:** **8 items** on both calls (`device_id=1` and `device_id=0`,
+  `type=00000001`), scanned under
+  `C:\Users\ramic\Documents\worldcup2010\B13EBABEBABEBABE\454108E4\00000001`. The 8 names are the
+  saves themselves: `WCSettings0 20261018091153`, `…091620`, `…100314`, `…120501`, `…125232`,
+  `…214606`, `…20261019091640`, `…20261019092400`. (Round 28 reported the same scan as
+  `…\00000000BABEBABE\… -> 0 item(s)`.)
+* **Other new observations:** `xeXamContentCreate` now **opens** rather than creates
+  (`flags=00000033`, `disposition=2`, result `0x0`); no save directory and no file in the content
+  store was written by this boot; the `Headers\00000001\*.header` files (one 328 B header per save)
+  were already present from the earlier creates; `C:\Users\ramic\Documents\worldcup2010\00000000BABEBABE`
+  still does not exist.
+
+## Correction carried from Round 28 (VERIFIED, restated)
+
+The crash function in `worldcup2010_019.log` is `sub_8333D4E0` and its extent ends at
+**`0x8333DCF8`** - the next registered function start **and** the next `.pdata` record - **not**
+`0x8333DCD0` (which is `0x28` short). `LR = 0x8333DB7C` is inside the function at `+0x69C`.
+
+## Open items
+
+1. **One more rebuild is needed** to make requirement 2 true (per-index change tracking, code above).
+   Everything else in Round 29 behaves as intended.
+2. A *general* repair of the truncation would be to widen `ArgTranslator::GetIntegerArgumentValue` so
+   a 64-bit parameter reads `ctx.rN.u64` (and the stack path reads 64 bits). That changes **every**
+   export's ABI, so it was deliberately not done; the narrow shim covers the XUID without that blast
+   radius.
+3. The throw-in crash (`worldcup2010_019.log`; independently reproduced by `worldcup2010_021.*` at
+   `10:25:50`, `Null-page access: guest read of 0x00000021`, `LR=0x8333915C`, nearest function
+   `0x83338F30 +0x22C`) was **explained in Rounds 30-31**: the faulting instruction is **`LR + 0x10`**
+   (i.e. `+0x23C`, not `+0x22C`), and the repeated `read of 0x00000005` lines were **our own Hunk-B
+   dumper**, not guest reads. Log 019 begins with the **same** read of `0x21` as log 023, so both logs
+   show one guest defect (a returned pointer whose `+0x1C` field is `5`, then a data address called as
+   a function), not two unrelated stops. Hunks A and B remain in place, unmodified, and did not fire
+   during the Round-29 boot (the game sat on the title screen).
+
+
+# Round 30 - the throw-in crash is a diagnostic fault loop, not a guest loop (read-only)
+
+**Status: analysis complete. Three patch files were written to `patches\` and each passes
+`git apply --check` on the pristine tree. Nothing was applied, nothing was rebuilt, and no file under
+`ReXGlue\src` was modified this round.** Stop point: waiting for approval.
+
+**One sentence.** In `worldcup2010_023.*` the guest does fault **once**, at `0x8333916C`
+(`lwz r5,0x1C(r9)` with `r9=5`), but the 14,284 "null-page" faults that follow are **our own Hunk-B
+dumper** reading guest `0x00000005` from *inside* the vectored exception handler. Windows re-enters
+the handler for that new fault, the same block is printed again one stack frame deeper, and the whole
+process stops making progress because the faulting thread holds the process-global memory critical
+region. **The guest instruction is never re-executed.** The crash is therefore a defect in the
+*diagnostic*, not a guest spin loop, and it is fixable without touching the guest.
+
+## Task 1 - log reconnaissance (VERIFIED)
+
+* Authoritative set: `dist\Output\logs\worldcup2010_023*.log`, 11 files, `11:11:07.805` to
+  `11:16:16.288`. `D:\FWC10\_backups\crash_logs_r29` is only a partial copy taken after rotation
+  (its first file starts mid-run); do not mix the two sets.
+* **First** "Null-page access" anywhere in the set:
+
+  ```
+  [2026-10-19 11:14:10.457] [error] [sys] [t18136] Null-page access: guest read of 0x00000021
+  (host 0x0000000100000021, page 0x00000000): refusing on-demand commit below 0x00010000;
+  falling through
+  ```
+  at `worldcup2010_023.7.log:23697`.
+* Then **14,284** occurrences of `Null-page access: guest read of 0x00000005` from `11:14:10.469` to
+  `11:16:16.280` = 126 s, **8.8 ms each**, ending only because the harness killed the process.
+  `Unhandled guest access violation`, `ROUND28 guest context` and the three pointer lines each occur
+  **14,284** times as well, i.e. exactly one block per fault: one nesting level per repetition, not a
+  repeating guest loop.
+* `worldcup2010_021.*` shows the same pattern earlier: first fault `0x21` at `10:25:50.178`, then
+  4,695 x `0x05` until `10:26:28.573` (38 s, 8.2 ms each). No stack-overflow death and no exit line
+  in either run.
+* **Decisive timing:** the last non-fault log line in the whole run is
+  `[2026-10-19 11:14:10.448] [info] [krnl] [t11092] ROUND28C XamUserGetSigninState ...` - 9 ms
+  *before* the first fault. After `11:14:10.457` the logs contain **only** the fault block, until the
+  kill at `11:16:16.288`. The other guest threads stop too (see Task 5).
+* Off-by-one counts between "fault" and "dump" lines in earlier rounds were log-rotation truncation,
+  not lost blocks.
+* Per-frame logging (measured on the 023 set, 541,382 lines): `ROUND28C XamUserGetSigninState`
+  **126,928** lines; next most frequent message **27**. The sign-in line is the only per-frame log
+  worth capping (Task 6d).
+
+## Task 2 - the faulting instruction (VERIFIED)
+
+`DEFINE_REX_FUNC(sub_83338F30)` in `worldcup2010_recomp.255.cpp:25084`, site lines 25405-25417
+(lowercase hex in the generated source; the image/disassembly below is the same code):
+
+```
+0x83339144  lwz  r11,0(r29)        ; r11 = *(r29) = 0x82522820
+0x83339150  lwz  r10,24(r11)       ; r10 = vtable[+0x18] = 0x836D1540
+0x83339154  mtctr r10
+0x83339158  bctrl                  ; ctx.lr = 0x8333915C
+0x8333915C  lwz  r9,28(r3)         ; r9 = the getter's return value + 0x1C  <- see below
+0x83339160  mr   r6,r30
+0x83339164  lwz  r8,4(r31)         ; r8 = 0xB8F5DA10
+0x83339168  lwz  r3,12(r31)        ; r3 = 0xB8DFD5E0
+0x8333916C  lwz  r5,0x1C(r9)       ; <-- FAULT: r9 = 5, effective address 0x00000021
+0x83339170  lwz  r4,12(r8)
+0x83339174  bl   0x832D2C28
+```
+
+* How `r10` became CTR: `r29 = 0xBE25D870`, `*(r29) = 0x82522820`; the image (big-endian) holds
+  `0x836D1540` at `0x82522820 + 0x18 = 0x82522838`. So `mtctr r10` loads the address of the getter
+  `sub_836D1540`, which is `lwz r3,44(r3); blr` (`worldcup2010_recomp.311.cpp:32488`) - it returns
+  `*(this + 0x2C)`. **The value returned is 5.**
+* Provenance of `r9 = 5`: `r9 = *(getter_return + 0x1C)` where `getter_return = *(r29 + 0x2C) = 5`.
+  The guest uses the getter's result as a pointer and then adds `0x1C`; there is no 64-bit wrap and no
+  truncation involved. The *object* `X = *(r29+0x2C)` is still unidentified (no guest memory dump
+  exists for the 11:14 run) - Task 6e adds it to the dump.
+* `LR` is **not** the faulting instruction: `0x8333915C` is the return address of `bctrl`; the fault is
+  at `0x8333916C` = `LR + 0x10`. Hence the log line "nearest registered function
+  `0x83338F30` (+0x22C)" under-reports the truth by 16 bytes (the faulting instruction is
+  `+0x23C`). The next `ctx.lr` write is at `0x83339178`, so the reported LR really is stale.
+* `r30 = 1`, `r24 = 2`: small counters/indices at this site, not pointers (INFERRED from their use
+  and from the surrounding code; they do not change across the 14,284 repetitions).
+* `r4 = 0xA6C60698`: **guest, not host.** `0xA6C60698` lies inside `vA0000000` (the kGuestPhysical
+  alias of guest RAM), and `r4` is only written *after* the faulting load (`0x83339170`), so at fault
+  time it holds the caller's previous value (VERIFIED for the range and for the write order; the
+  "stale" character is INFERRED). It coincides with the low 32 bits of a possible
+  `0x1_00000000`-based host pointer, which is why it looked host-like, but there is no evidence it is
+  a host pointer leak.
+* The dump's `r3 = 0xB8DFD5E0` is the value *after* `0x83339168` executed, **not** the getter's return
+  value; the getter's return (`5`) survives only in `r9` (and in the `X` that was dereferenced).
+
+## Task 3 - the objects on the crash path
+
+VERIFIED by reading the dumped guest blocks and the image (`fifadllzf.dec.bin`, big-endian):
+
+* `r8` object at `0xB8F5DA10`:
+
+  | off | value | meaning |
+  |---|---|---|
+  | +0x00 | `0x8252ECD0` | primary vtable: 16+ code pointers (`0x832D0580`, `0x832BF7D0`, `0x832BF7E8`, `0x832C2518`, `0x832D1D68`, ...) |
+  | +0x04 | `0x8252ECC4` | secondary 3-word table `{0x832CF968, 0x832C9088, 0x00000000}` |
+  | +0x08 | `0xB8D219B0` | the registry table (below) |
+  | +0x0C | `0x0000001E` | integer 30 |
+  | +0x14 | `0xB8F5D4E0` | pointer |
+  | +0x18 | `0xB8E044A0` | pointer |
+  | +0x1C | `0xB8E0F7C0` | pointer |
+  | +0x20 | `0xB8DFDBA0` | pointer |
+  | +0x24 | `0x01CDCDCD` | a `0xCDCDCDCD` word whose high byte was later overwritten with `0x01` (INFERRED) |
+  | +0x28 | `0xB8DFD5E0` | == `r3` |
+  | +0x2C..0x3C | `0xBAFD8390`, `0xBAFDB2C0`, `0xBAFE1A10`, `0xBAFDB330`, `0xBAFEC2B0` | pointers into `vBExxxxxx` guest RAM |
+
+* `r3` block at `0xB8DFD5E0`: `+0x00 = 0xB8D219B0`, `+0x04..+0x0F = 0xCDCDCDCD x3`,
+  `+0x10 = 0xB8ED2860`, `+0x14.. = 0xF0F0F0F0`. It is a **live, readable guest-heap block** with a
+  valid table pointer and a valid pointer at `+0x10`, plus poison fill in between.
+  Is it allocated / freed / never constructed? VERIFIED: allocated and reachable (readable, valid
+  contents). INFERRED: an allocated-but-only-partially-initialised object - the `0xCD` fill is what
+  this game's constructors leave in fields they have not set yet (see the fill sites below); it is
+  *not* a freed block (freed blocks would normally be re-linked, and `+0x10` still points at a live
+  block). "Never constructed" cannot be proven from one block.
+* Table at `0xB8D219B0`: 16-byte records pointing into the image, e.g.
+  `{0x6C, 0, 0x83917920, 0}`, `{0, 1, 0x8391792C, 0}`, `{0xB8D231B0, 2, 0x83917938, 0}`,
+  `{0xB8D233D0, 3, 0x83917944, 0}`. The image table at `0x83917920` is 12-byte records
+  `{index, name_ptr, kind}`:
+
+  ```
+  0  GymDino::NoType                  kind 0x00
+  1  GymDino::IIntersectable          0x40
+  2  GymDino::IRendered               0x40
+  3  GymDino::IHavePosition           0x40
+  4  GymDino::IHaveSettablePosition   0x40
+  5  GymDino::IOutputDebugText        0x3C
+  6  GymDino::IPlayer                 0x3A
+  7  GymDino::PlayerRender            0x3A
+  8  GymDino::ActionActor             0x3A
+  ```
+  (`EdbDino::NoType/int/char/MyStruct/...` sit at `0x823C43E0..` with 8-byte records at
+  `0x839178D4..`; 64 name-pointer sites and 119 type-name strings were found, all inside this
+  registry). This is EA's **GymDino / EdbDino** interface/type registry - the title runs EA's
+  "GymDino" engine, so the object is a live engine object, and the table is the type registry, not a
+  vtable.
+* **Constructor sites for `0x8252ECD0` / `0x8252ECC4`: not found in this module (INFERRED).** No word
+  in the image equals either vtable address, and no `lis`+`addi`/`ori` sequence materialises them
+  (method sanity-checked: the same search does find the 72 sites that reference `0x83917920`). Either
+  the constructor lives in another XEX/module of the title or the pointer is copied from a prototype
+  object. The vtables themselves *are* image data (the entries read this round all land inside the
+  module code range `0x82650000-0x838D8DB4`).
+* **Who writes `0xCD` / `0xF0` (VERIFIED sites, INFERRED meanings):** the game's own code materialises
+  `0xCDCDCDCD` at 16 places and `0xF0F0F0F0` at 2. Examples:
+  * `0x833A00BC`: `lis r9,0xCDCD; ori r9,r9,0xCDCD; mtctr r9; ... stwu r9,4(r11); bdnz` - a
+    **region word-fill loop** with `0xCDCDCDCD`.
+  * `0x829CE2CC`: `lis/ori` then `stw r11,0(r31); stw r11,4(r31)` - **poisoning a new small object**.
+  * `0x82A2DE30`: three `stw 0xCDCDCDCD` followed by real field stores - the classic
+    "fill-then-initialise" constructor.
+  * `0x83478140`: `lis r9,0xF0F0; ori r9,r9,0xF0F0; mtctr; stwu r9,4(r11); bdnz` over a **64-byte
+    stack buffer** (`r11 = r1+0x9C`, 16 iterations); `0x83568048` is a second `0xF0F0F0F0` fill.
+  So: `0xCD` = uninitialised/poison (INFERRED, strongly supported by the ctor sites); `0xF0` = a
+  second poison pattern whose role at these two sites is not determinable (one is clearly a stack
+  buffer) - treat its meaning as UNKNOWN. The runtime's own fills are unrelated: `scribble_heap`
+  (`0xCD`, default **off**), `Arena::DebugFill` (`0xCD`, host arena) and the guest-stack fill `0xBE`
+  (`xthread.cpp:308`); none of them writes guest heap blocks.
+
+## Task 4 - relation to worldcup2010_019.log (VERIFIED)
+
+`worldcup2010_019.log` (2026-10-18, **pre-Hunk-A** build) shows the same guest defect one step later:
+
+```
+118: [2026-10-18 22:50:25.395] [warning] [sys] [t24456] Guest virtual read of 0x00000021
+     (host 0x0000000100000021) committed on demand as page 0x00000000 (recommit); total 2
+119: [2026-10-18 22:50:25.402] [error] [cpu] [t24456] INVALID INDIRECT CALL:
+     target=82486704 LR=8333DB7C CTR=82486704 r1=7019E740 r2=00000000 r3=BE4545F8
+     r11=825227F8 r12=8333DB44
+120: [2026-10-18 22:50:25.402] [critical] [core] [t24456] [FATAL] Call to invalid or
+     unregistered function at guest address 0x82486704
+```
+
+* Same defect family: an interior/returned pointer's small offset field is used as a pointer
+  (`023`: `*(X+0x1C) = 5`) or as a call target (`019`: `*(r9+0x14) = 0x82486704`, a *data* address
+  inside the image, called through `mtctr`/`bctrl`).
+* `019` site: `sub_8333D4E0` (`worldcup2010_recomp.62.cpp:23868`, call at line 24856):
+  `lwz r9,760(r30)` -> `addi r3,r30,760` -> `lwz r8,20(r9)` -> `mtctr r8` -> `bctrl`
+  (`ctx.lr = 0x8333db7c`), i.e. `r8 = *(r9+0x14) = 0x82486704`.
+* Because the pre-Hunk-A build committed the low page, the guest read `0x21` returned zeros and the
+  process survived 7 ms longer before dying on the invalid call. **Hunk A now surfaces the true
+  defect at the first near-null read**, which is the better failure mode; Hunk A must not be weakened.
+* The Round-29 note that `sub_8333D4E0` ends at `0x8333DCF8` is **correct** (re-verified this round:
+  `DEFINE_REX_FUNC(sub_8333DCF8)` exists at `worldcup2010_recomp.27.cpp:24366` and is the next
+  registered start after `0x8333D4E0`, so `LR 0x8333DB7C` is `+0x69C` inside the function).
+
+## Task 5 - why the process neither terminates nor makes progress
+
+The chain, all VERIFIED unless tagged:
+
+1. The guest faults at `0x8333916C` -> host `0x100000021` -> Windows calls the VEH
+   (`ExceptionHandlerCallback`, `core\exception_handler_win.cpp`).
+2. `MMIOHandler::ExceptionCallback` (`system\mmio_handler.cpp:371`) takes the **process-global**
+   `std::recursive_mutex` at line 408 (`rex::thread::global_critical_region::Acquire()`;
+   `include\rex\thread\mutex.h:56-58` shows it wraps a `static std::recursive_mutex`) and moves it
+   into `Memory::AccessViolationCallback` (lines 419-421). **The faulting thread therefore holds the
+   memory critical region for the whole handler.**
+3. `AccessViolationCallback` (`system\xmemory.cpp:549`) takes Hunk A's low-page branch, logs
+   "refusing on-demand commit", falls through to the fatal path, calls Hunk B's
+   `Round28DumpGuestContext`, and returns `false`.
+4. Hunk B's `Round28DumpRegAndPointee("r9", 5)` calls `Round28DumpBytes`. Its guard only checks
+   "committed" (`info.state & kMemoryAllocationCommit`, true for guest page 0) and then reads
+   `p[0..63]` at host `0x100000005` - a **PAGE_NOACCESS** page (`protect_zero` commits the low 64 KiB
+   as no-access). That is a **second access violation inside the handler**.
+5. Windows **re-enters the same VEH** for the new fault (it does not retry the faulting
+   instruction; verified with a faithful 16 MiB-stack probe in `r30_depth_probe.c`: depth kept
+   incrementing past 5,000). The guest context is frozen, so the identical block is printed again,
+   one frame deeper.
+6. Nothing ever handles it: `ExceptionHandlerCallback` returns `EXCEPTION_CONTINUE_EXECUTION` only
+   when a registered handler returns true (line 98) and `EXCEPTION_CONTINUE_SEARCH` otherwise
+   (line 101); the VCH is commented out (line 111); `AccessViolationCallback` returns `false` for
+   both faults. The generated game code contains **no SEH frames at all** (0 `SEH_TRY` / `SEH_CATCH`
+   / `__except` in the generated sources; the 16 `RtlUnwind` hits are guest import *names*), so the
+   guest code cannot swallow it either. There is no `SetUnhandledExceptionFilter` in the runtime.
+7. Why the whole process freezes, not just one thread: the recursion never unwinds, so the global
+   memory critical region is never released, and every other guest thread that allocates/frees or
+   touches guest memory blocks on it. Log evidence: the last non-fault line is
+   `11:14:10.448`, the first fault `11:14:10.457`, and after that only the fault block, for 126 s.
+8. Why it did not die of stack overflow while being watched: `xthread.cpp:433`
+   `params.stack_size = 16_MiB; // Allocate a big host stack.` - each guest thread has a **16 MiB**
+   host stack, and 14,284 levels fit in it (`16 MiB / 14,284 = 1.17 KiB` per level). The probe with
+   the same call chain dies at roughly 5-6 k levels only because its frames are larger; with the real
+   frames the loop was within a few thousand levels of a stack-overflow death when the process was
+   killed.
+9. Cost per level: ~8.8 ms, dominated by `FindContainingFunctionStart` (`function_dispatcher.cpp:246`)
+   rebuilding and sorting a 91,164-entry `std::vector` **on every dump** (INFERRED from the code and
+   the probe timing; the probe's frames without the sort run ~0.5 ms/level).
+10. The guest instruction executes **exactly once** and never re-executes: the VEH never returns to
+    `0x8333916C`, so there is no "retry" of the guest load. The repetition is entirely ours.
+
+## Task 6 - proposed Round-30 change set (written, NOT applied)
+
+One change set, split per file as in Round 29 (apply in order 1, 2, 3 from the repo root with
+`git apply -p1`). Every file carries its own `#ifndef ROUND30_FIX / #define ROUND30_FIX 1` off switch;
+`exception_handler_win.cpp` and `function_dispatcher.cpp` share the `ROUND30_FIX` name and default.
+`ROUND30_MINIDUMP` (default `1`) additionally gates the minidump.
+
+| patch | SHA-256 |
+|---|---|
+| `patches\round30-1-fault-loop-and-safe-dump.patch` | `660174BB2F026CD001110B3DA83FBA48DABC70E772F248BD18CF01979B00CB3F` |
+| `patches\round30-2-host-rip-log.patch` | `48230F60451642E5E15F9B8503EC67E31803EFBF354E2D5CA82656E5DAB997C2` |
+| `patches\round30-3-signin-per-index.patch` | `B8A0F7617AACEDC17C8A5AD2F189FE0639092BDD41813F63D1CA43DDCF4B1DEC` |
+
+(Exact values are also in `D:\FWC10\_backups\20261019-121636-r30\SHA256SUMS.txt`.)
+
+### 6a - `ReXGlue\src\system\function_dispatcher.cpp` (the fault-loop guard + a dump that cannot fault)
+
+* **The root fix:** every diagnostic read now checks **host** page protection first
+  (`Round30HostReadable`: `VirtualQuery` + `State == MEM_COMMIT` + no `PAGE_NOACCESS`/`PAGE_GUARD`),
+  so the dumper cannot be the thing that faults: `Round28DumpBytes` (before reading `p[0..63]`) and
+  `Round28DumpRegAndPointee` (before reading the pointee word). The message becomes
+  `(... host page not readable; not dumped)`.
+* **Fault-loop guard:** an FNV-1a hash over all 32 GPRs + LR + CTR is compared with the previous
+  context on the same thread. Repetition 1 dumps; repetition 2 dumps and logs
+  `ROUND30 fault repeated with an identical guest context ...`; repetition 3 logs
+  `ROUND30 fault loop: the same guest register context faulted N times in a row ... guest function
+  0x... (+0x... from LR=...) ... r3=... r8=... r9=... r29=... r31=... Terminating the process`, writes a
+  minidump and calls `TerminateProcess(..., 0x52300001)`. Repetitions above 3 are suppressed with a
+  rate-limited counter (belt and braces; unreachable once the guard fires).
+* **"Not only LR":** `Round30DumpCode` prints `0x60` bytes of guest code starting at `LR-0x10`
+  (readable-checked), so the instruction after the last call is visible in the log even without the
+  image.
+* **Owner chain / table pointers (6e):** the block now also dumps `[r29]`, `[r29->*]`, and the first
+  24 words of the registry table at `[r3->*]` (and at `[r8+8]` if it differs). For the 023 crash that
+  is exactly `0xB8D219B0` and its `GymDino::*` records.
+* `ROUND30_MINIDUMP` writes `%TEMP%\worldcup2010_r30_<pid>_<tick>.dmp` with `MiniDumpWriteDump`
+  (`#include <dbghelp.h>`, `#pragma comment(lib, "dbghelp.lib")`, Windows-only, failures silent) and
+  logs one line. No exception pointers are available at that depth; it is a normal dump, enough to see
+  the recursed stack.
+
+### 6b - `ReXGlue\src\core\exception_handler_win.cpp` (log the host RIP)
+
+* Before the handler loop, for `EXCEPTION_ACCESS_VIOLATION` only, log
+  `ROUND30 exception: host RIP=0x... (<module> base=0x... +0x...) fault_host=0x...`, rate-limited to
+  the first 8 per thread and then every 1024th (`thread_local` counter). `Round30HostRipClass` maps the
+  RIP with `VirtualQuery`/`GetModuleHandleExW` and names the module: **rexruntime.dll
+  (runtime/diagnostic code, not guest code)** vs **main executable (recompiled guest code)**.
+  In the 023 run this single line makes the diagnosis immediate: the first fault has an RIP in the
+  executable, every repeat has an RIP in `rexruntime.dll`.
+
+### 6c - Hunks A and B stay
+
+`xmemory.cpp` is **not modified**: Hunk A's refusal (with its "falling through to the fatal path"
+message) and Hunk B's call site stay exactly as they are. The dump internals are fixed, not replaced.
+
+### 6d - `ReXGlue\src\kernel\xam\xam_user.cpp` (per-user-index sign-in tracking)
+
+Round 29 kept **one** `(user_index, state)` pair, so the game's round-robin polling of indices 0..3
+made every call look like a change (126,928 lines). The patch keeps `logged[5]` / `last_state[5]`
+(0..3 plus a slot for anything else) and logs only a real change of that index's state:
+`XamUserGetSigninState user_index=N -> 0x... (state changed for this index)`. No other per-frame log
+exists in this run (next highest message count: 27), so nothing else is capped beyond the fault-dump
+rate limiting in 6a.
+
+### 6e - asked-for effect on the next dump (what the log will show)
+
+For the same crash the block will contain `[r3]`, `[r8]`, `[r9] (host page not readable; not dumped)`,
+`[r11]`, `[r29]`, `[r30]`, `[r31]`, the `[r3->*[table]]` word dump, the code bytes around `LR`, and a
+`ROUND30 exception ... (rexruntime.dll ...)` line for the dump's own fault - or, with the fix in
+place, no dump fault at all and one clean block followed by a deterministic stop.
+
+### Verification and limits
+
+* `git apply --check -p1 --whitespace=nowarn` on the pristine tree: **exit 0** for all three.
+* **Not compiled and not built** (no build this round). The new code uses only existing helpers
+  (`fmt::format`, `REXCPU_ERROR`, `REXLOG_ERROR`, `PPCContext`, `Memory::TranslateVirtual`) plus
+  Windows APIs already available in the Windows-only files.
+* Behaviour change to expect after applying: a genuine guest access violation now produces **one**
+  context block and then the ordinary unhandled-exception termination (Hunk A's "fatal path") instead
+  of a hang; a *diagnostic* fault (if one is ever introduced again) terminates after three identical
+  contexts with a minidump. Both are deterministic; neither returns `EXCEPTION_CONTINUE_EXECUTION`
+  for a guest fault, so no guest state is silently corrupted.
+
+## Task 7 - state and next step
+
+* No source change, no build, no log/dump/backup deleted. `patches\round30-*.patch` are new files;
+  the pre-change tree is preserved in `D:\FWC10\_backups\20261019-121636-r30` (pristine copies of the
+  three targets + the three patches + `NOTES.md.before-r30` + `SHA256SUMS.txt`).
+* Waiting for approval to (a) apply the three patches and rebuild once, or (b) adjust the change set
+  first. If approved, the rebuild also tests the per-index sign-in cap (126,928 -> ~8 lines expected,
+  one per index and state change).
+
+## Open items carried forward
+
+1. ~~The identity of `X = *(r29+0x2C)` (whose `+0x1C` field is 5) is still unknown; Task 6e's dump
+   should answer it on the next crash.~~ **Answered in Round 31:** `X` (= `G`) is the *owner object*
+   stored by the base ctor `sub_8323FA88` (`stw r30,44(r31)`); G's class has vtable `0x825218A4`, and
+   `G+0x1C` is an **array element count** (`sub_83233D90`), so `5` = five elements. The caller then
+   used it as a pointer (guest type confusion). See `# Round 31`, 5.2-5.5.
+2. `0x8252ECD0` / `0x8252ECC4` constructors are outside this module (INFERRED); finding them needs the
+   other XEX modules or a prototype-object search.
+3. The general 64-bit argument truncation in `ArgTranslator::GetIntegerArgumentValue` remains the
+   general fix for XUID-class bugs (Round 29 note); the narrow shim is still the applied mitigation.
+
+# Round 31 - the three patches applied, one rebuild, 150 s title-screen boot, and the classes behind the fault
+
+> Round 31 applied the three Round-30 patches (with the additions the user asked for), rebuilt **once**,
+> booted **150 s at the title screen (no match)**, and did the static analysis of the objects in the
+> throw-in fault chain. Nothing was pushed. `ReXGlue/` is gitignored (`.gitignore:20`), so the patch
+> files remain the only change record; `NOTES.md` and the pre-existing
+> `Installer/recomp-template/config/fifadllzf_overrides.toml` are still the only modified tracked files.
+
+## 1. Change set (applied)
+
+| patch | size | SHA-256 |
+|---|---|---|
+| `patches\round30-1-fault-loop-and-safe-dump.patch` | 19,163 B | `595C2377D8E11E08760EDBD5FA0A4696B6DE5CFC8DD9F2C0003BB328A8823907` |
+| `patches\round30-2-host-rip-log.patch` | 3,841 B | `48230F60451642E5E15F9B8503EC67E31803EFBF354E2D5CA82656E5DAB997C2` |
+| `patches\round30-3-signin-per-index.patch` | 2,284 B | `B8A0F7617AACEDC17C8A5AD2F189FE0639092BDD41813F63D1CA43DDCF4B1DEC` |
+
+- `git apply --check -p1` exit 0 for all three on the pristine tree (re-run after the edits below); then
+  applied in order 1, 2, 3 (exit 0 each). Diffstat: 338 insertions, 5 deletions across
+  `exception_handler_win.cpp`, `xam_user.cpp`, `function_dispatcher.cpp`.
+- Round-31 additions (all requested in the approval):
+  - **fault block** also dumps `r29` (24 words), `G = *(r29+0x2C)` (16 words = 64 bytes),
+    `*(G+0x1C)`, the object `*(G+0x1C)` points at (when it is one), and the first words of up to four
+    objects G points at (deduped, page-checked like the rest of the block). `this` for the `bctrl` is
+    **VERIFIED** to be `r29` (`mr r3,r29`, generated `worldcup2010_recomp.255.cpp:25407`), so the dump
+    reads `*(r29+0x2C)` and not `*(*(r29)+0x2C)`.
+  - **minidump** is `MiniDumpNormal` (module list + thread list + thread stacks, **no full memory**),
+    with a `MiniDumpWriteDump` IO callback that counts bytes and requests a cancel at the cap, plus a
+    post-write file-size check (so an over-cap file is never kept). Free-space gate: it refuses when
+    free space is below `cap + 64 MiB`.
+    - `round30_minidump_dir` (string, default empty): empty = `%TEMP%\worldcup2010_minidumps`;
+      file name `worldcup2010_r30_<pid>_<tick>.dmp`. **Default path:**
+      `C:\Users\<user>\AppData\Local\Temp\worldcup2010_minidumps\worldcup2010_r30_*.dmp`.
+    - `round30_minidump_max_mb` (uint32, default **256**; 0 = no cap).
+  - **termination** after the third identical fault context is unchanged (`TerminateProcess` with
+    `0x52300001`); a genuine one-off guest fault still produces exactly **one** context block and then
+    the normal unhandled-AV path, as before.
+- Transparency: the **first** rebuild attempt failed to compile (clang-cl rejected the minidump
+  callback member names I had used: `IoStartCallback`/`IoWriteAllCallback` do not exist in
+  `minidumpapiset.h`). Fixed to `input->Io.BufferBytes` / `output->Cancel` (SDK 10.0.26100.0
+  `um\minidumpapiset.h:1237-1265`) + a post-write size check; patches regenerated, `git apply --check`
+  re-run (exit 0), re-applied, rebuilt. Only the final hashes above were built.
+
+## 2. Build (one rebuild, approved)
+
+- `BUILD_EXIT_CODE=0` (recipe `C:\Users\ramic\AppData\Local\Temp\opencode\round29_build.cmd`).
+- `dist\Output\rexruntime.dll` **10,216,960 B**, 2026-10-19 14:36:01 (Round 29: 10,187,776 B).
+- `dist\Output\worldcup2010.exe` 8,022,528 B, 14:36:18.
+- New strings found in the built runtime (ASCII search of `rexruntime.dll`): 1x
+  `ROUND30 exception: host RIP`, 1x `ROUND30 fault loop`, 1x `ROUND30 minidump written`, 1x
+  `ROUND30 minidump abandoned`, 3x `ROUND30 minidump skipped`, 1x `worldcup2010_minidumps`,
+  2x `round30_minidump_dir`, 2x `round30_minidump_max_mb`, 1x `G = *(r29+0x2C)`, 1x `r29 object`,
+  1x `state changed for this index`.
+
+## 3. Boot (150 s, title screen, no match)
+
+- 14:39:06 -> 14:41:38; window at 0.6 s (`2010 FIFA World Cup South Africa PC`); screenshots at
+  20/40/60/90/120/150 s in `C:\Users\ramic\AppData\Local\Temp\opencode\round31_shots\`
+  (`r31_150s.png` shows the attract/stadium sequence); still running at 152 s -> killed by the harness.
+- **Log volume: 1 file, 48,269 B, 284 lines** (`worldcup2010_024.log`). Round 29 was 4 files /
+  16,439,480 B / 34,491 lines in the largest log. Reduction ~340x in bytes.
+- **Sign-in lines: 4** (one per user index, `state changed for this index`) instead of the 126,928
+  per-call lines in the Round-30 crash set -> Hunk-3 works.
+- **No** `Null-page access`, **no** `ROUND28 guest context`, **no** `ROUND30 fault loop`, **no**
+  minidump, **no** `INVALID INDIRECT CALL` / `TRAP` / `FATAL`.
+- 67 `ROUND30 exception: host RIP=0x...` lines: these are **first-chance** exceptions the VEH saw from
+  one module (`base=0x7FFC9E760000`, 15 distinct offsets `+0x52FF8E..+0x70AD766`, 9 threads) during
+  startup. The game
+  survived all of them, so they are not guest faults; the host-RIP line logs every VEH entry (first 8
+  per thread, then every 1024th), as designed. Non-ROUND30 `[error]` lines are only the pre-existing
+  FIFA `XexGetProcedureAddress` traces and `ResolvePath` misses.
+
+## 4. Corrections to earlier notes (task 5)
+
+1. **`LR+0x22C` -> `LR+0x23C`.** The nearest-registered-function line is computed from `LR`, and the
+   faulting instruction is `LR + 0x10` (`LR=0x8333915C`, fault at `0x8333916C`), i.e. `+0x23C` from
+   `sub_83338F30`. Corrected in place in the Round-29 open item (item 3) and restated here.
+2. **The repeated `read of 0x00000005` lines were our own Hunk-B dumper, not guest reads.** The guest
+   executed the faulting instruction **once**; the 14,284 repeats are `Round28DumpBytes` reading guest
+   `5` (host `0x100000005`) from inside the VEH. (The Round-30 section already states this; the Round-29
+   open item is corrected in place.)
+3. **Log 019 began with the same read of `0x21` as log 023.** `worldcup2010_019.log:118-120` shows
+   `Guest virtual read of 0x00000021` followed 7 ms later by `INVALID INDIRECT CALL target=82486704`
+   (`LR=8333DB7C`); 023 begins with the same read. So 019 and 023 are one defect family (a small
+   integer used as an address/function pointer), not two unrelated stops. Corrected in place in the
+   Round-29 open item.
+
+## 5. Static analysis of the fault chain (task 6)
+
+Everything below is read from the generated sources and the decrypted image (big-endian,
+base `0x82300000`); tags say which parts are proven by code and which are inference.
+
+### 5.1 The class of the `r29` object (VERIFIED)
+
+- `r29`'s vptr is `0x82522820` (`lwz r11,0(r29)` at the crash site; image word at `0x82522838`
+  = `0x836D1540` = slot `+0x18`).
+- **ctors/dtors (all VERIFIED by the literal `lis 0x8252` + `addi 10272` materialisation):**
+  - ctor `sub_83250B10` (`worldcup2010_recomp.180.cpp:22681`) - stores the vptrs and initialises the
+    members;
+  - base ctor `sub_8323FA88` (`worldcup2010_recomp.130.cpp:21859`);
+  - destructor `sub_8323FF20` (`worldcup2010_recomp.296.cpp:21144`);
+  - deleting destructor `sub_83240030` (`worldcup2010_recomp.38.cpp:22643`, slot 0: dtor + optional
+    `sub_8304AE30` free);
+  - allocating wrapper `sub_83250DD8` (`worldcup2010_recomp.57.cpp:20345`): `li r3,288` ->
+    `sub_8321EE00` (pool allocator, 16-byte alignment) -> `sub_83250B10(new, owner, arg)` -> stores the
+    new pointer in the caller's slot and increments the refcount at `+4`.
+- **Size 288 bytes** (`0x120`; the ctor's last write is `+0x11C`). **Refcount at `+4`.**
+- **Four vptrs** (multiple inheritance): `+0 = 0x82522820`, `+8 = 0x825227F8`,
+  `+0x24 = 0x825227E8`, `+0x28 = 0x825227D8`. The `0x825218B8`-style overlap does not apply here: these
+  are four distinct tables.
+- **The class has its own RTTI**: slot `+4` (`sub_8323FB20`, `recomp.274.cpp:22941`) returns
+  **`0x3C9F47C4`**; slot `+8` (`sub_8323FB38`) compares `r4` against it. The tag never appears in
+  image data, so there is no name table to read a class name from.
+- **One construction site** for the whole module (`sub_83250DD8`), **one destruction site**
+  (`recomp.38.cpp:22664`). The wrapper has **no direct call sites**: it is reachable only as a
+  **virtual function pointer** stored at image word `0x825218C8` (and that word is shared by the owner
+  class's two vptrs, see 5.3).
+
+### 5.2 What `sub_836D1540` returns and who `this` is (VERIFIED)
+
+- `sub_836D1540` (`recomp.311.cpp:32488`) is exactly `lwz r3,44(r3); blr` -> returns `*(this+0x2C)`.
+- the call site does `mr r3,r29` before the `bctrl` (generated line 25407), so **`G = *(r29+0x2C)`**.
+- **`+0x2C` is written by the base ctor from its `r4` argument**: `sub_8323FA88` ends with
+  `stw r30,44(r31)` where `r30 = r4` (`recomp.130.cpp:21859`, store at line 21884). So the field is
+  **the owner pointer handed to the constructor**, not something a later setter writes. This supersedes
+  the Round-30 phrasing "who writes `+0x2C` is still unknown".
+- the class's slot `+0x1C` (`sub_82F19E48`, `recomp.280.cpp:16744`) calls the getter twice
+  (`vtable+0x18(this)` then `vtable+0x18(result)`), i.e. the field is an **owner/parent chain**.
+
+### 5.3 G's class (VERIFIED layout)
+
+- G's class vptrs: **`0x825218B8` at `+0`** (primary) and **`0x825218A4` at `+0x14`** (secondary;
+  the tables overlap with a `0x14` stride). **CORRECTED in Round 32:** this line originally had the
+  two offsets swapped. The ctor `sub_8323FEB0` stores `0x825218B8` at `+0` (the `r9` store at
+  `recomp.280.cpp:22604`) and `0x825218A4` at `+0x14`, and the live 025 dump at `0xBD6BE1D0` reads
+  `+0 = 0x825218B8`, `+0x14 = 0x825218A4` - so G is a **primary** object of that class.
+- ctor `sub_8323FEB0` (`recomp.280.cpp:22604`); dtor `sub_832242E0` (`recomp.301.cpp:20709`).
+- ctor writes: `+0x18 = 0`, **`+0x1C = 0`**, `+0x20 = 0`, `+0x2C = 0`, `+0x24 = float const`,
+  `+0x28 = float const`, and the two vptrs.
+- the allocating wrapper `sub_83250DD8` is G's class virtual at **A+0x24 / B+0x10** (same word
+  `0x825218C8`). As a thiscall-with-sret its arguments are `(r3 = return slot, r4 = this = G, r5 = arg)`
+  - so the pointer stored at `r29+0x2C` is exactly `this` of that call: **G is the object that created
+  the 288-byte object**.
+
+### 5.4 What `+0x1C` of G is: an element count (VERIFIED)
+
+`sub_83233D90` (`recomp.215.cpp:23275`, G's virtual at A+0x40 / B+0x2C) does:
+
+```
+r4 = *(this+0x1C); r3 = *(this+0x20); r5 = 16; r6 = comparator
+sub_82838D80(array, count, 16, cmp)          ; sort/search over 16-byte records
+... walk the records, drop null pointers ...
+*(this+0x1C) = number_of_non_null_records
+```
+
+So the pair **`+0x20` = pointer to an array of 16-byte records, `+0x1C` = element count**. The record
+loop calls each record's `vtable+8` with the type tag `0x3D94C20C` (`lis 15764; ori 49676`) and writes a
+float at record `+12`; the record is `{object*, u32, float, float}`.
+
+Therefore **`*(G+0x1C) = 5` in the 023 run means "five elements"** - a legitimate value of G's class,
+not an enum, not a flag, not an index into the GymDino/EdbDino table at `0x83917920` (that table is a
+different subsystem; no code path connects it to this field).
+
+### 5.5 The caller's chain and what it expected (evidence, then inference)
+
+Generated `recomp.255.cpp:25405-25432` (VERIFIED):
+
+```
+r11 = *(r29)                 ; 0x82522820
+r3  = r29 ; r30 = *(r29+0x664)
+call *(r11+0x18)             ; sub_836D1540 -> G
+r9  = *(G+0x1C)              ; 5
+r6  = r30
+r8  = *(r31+4) ; r3 = *(r31+12)
+r5  = *(r9+0x1C)             ; <-- fault, EA 0x21
+r4  = *(r8+12)
+sub_832D2C28(r3, r4, r5, r6)
+```
+
+- The caller reads `*(G+0x1C)` **statically** and dereferences it, so it expects a **pointer** there.
+  In G's class that offset is only ever a count (the ctor writes 0; the sort/compact pass writes the
+  count). Nothing in the module sets a pointer at `+0x1C` of G's class.
+- The caller also reads `*(r29+0x664)` - **0x4A4 bytes past the end of a 288-byte object** - which only
+  makes sense if it believes `r29` is a much larger type.
+- **Two readings, both consistent with the data (INFERRED):**
+  (a) *wrong object type*: the slot that produced `r29` held an object of a different class (or a stale
+  pointer) and the caller applied the wrong layout; or
+  (b) *adjusted subobject*: if the factory was invoked through the secondary vptr (`+0x14`), the stored
+  owner is `owner+0x14`, and `G+0x1C` is the owner's `+0x30` field, a different member.
+- The **new dump decides between them**: it prints 24 words at `r29`, 64 bytes at `G`,
+  `*(G+0x1C)`, and the first words of G's pointed-to objects. With the corrected vptr order
+  (5.3), if G's first word is `0x825218B8` the owner is the **primary** subobject (reading (a));
+  if G's first word is `0x825218A4`, the stored pointer is the adjusted **secondary** subobject at
+  `+0x14` (reading (b)). The 025 dump reads `+0 = 0x825218B8` -> **reading (a) survives**; (b) is
+  excluded. Round 32 then showed *why* the wrong object reached the caller: the QueryInterface that
+  produced `r29` is truncated (see the Round-32 section), so the caller's null check never fires.
+- In **both** readings the guest is using a small integer as an address: the defect is in the guest's
+  object graph (wrong/stale pointer or wrong static type), **not** in our memory mapping - the same
+  shape as log 019, where `0x82486704` (a data address) was called as a function through
+  `*(*(r30+0x2F8)+0x14)`.
+
+### 5.6 Writers of small constants to `+0x1C` (reachability)
+
+- The module has **382** store sites of a 0..9 immediate to `+0x1C` (scan over both generated trees).
+  The only one belonging to G's class is the count update in `sub_83233D90`; none stores a
+  pointer-sized value or a magic constant there.
+- Reachability of `sub_83233D90` in our runs: **INFERRED** reachable (it is the class's array
+  maintenance virtual, and the object existed with a non-empty array: 5 elements); we cannot prove the
+  call without a trace, and this round added no tracing for it.
+- The `5` is therefore the **element count of G's array**, i.e. the code did not "choose 5"; it is the
+  state of the array at the time of the throw-in.
+
+### 5.7 Task 7 (64-bit XAM audit) - deferred
+
+Not done this round: marked low priority, and this round must stop after the rebuild + boot report. The
+general `ArgTranslator::GetIntegerArgumentValue` truncation (Round 29 note) remains the outstanding
+general fix; the narrow XUID shim is still the applied mitigation.
+
+## 6. What the next throw-in should produce
+
+- One `ROUND28 guest context` block with the new `r29 object` / `G` / `*(G+0x1C)` detail, then a
+  capped minidump (default `%TEMP%\worldcup2010_minidumps`, 256 MiB cap), then a **clean stop** instead
+  of the 14,284-fault hang; on the third identical context the process exits with `0x52300001`.
+- The `[G = *(r29+0x2C) via sub_836D1540]` line plus 64 bytes at G answer 5.5 (a) vs (b).
+
+## Open items carried forward
+
+1. Decide reading 5.5(a) vs 5.5(b) from the next crash dump (first word at G tells them apart).
+2. The semantic names of the two classes are still unknown (no name table; RTTI tags
+   `0x3C9F47C4` for the 288-byte class, `0x3D94C20C` for the objects in G's array).
+3. The general 64-bit argument truncation in `ArgTranslator::GetIntegerArgumentValue` remains the
+   general fix for XUID-class bugs (Round 29 note); the narrow shim is still the applied mitigation.
+4. The 64-bit XAM audit (task 7) is deferred.
+
+# Round 32 (2026-10-19) - the throw-in crash is classification (A); root cause is our own truncated QueryInterface
+
+> Read-only round. Nothing was launched, rebuilt, applied or deleted. The only writes are this
+> section, the Round-31 corrections above, `LAST_BACKUP.txt`, and the two **proposed** patch files
+> under `patches\`. `ReXGlue/` was read only (gitignored, unmodified).
+>
+> **Status after approval (2026-10-19).** This section is the pre-approval diagnosis. The two
+> patches were then applied, one incremental rebuild succeeded, and a 152 s title-screen boot ran;
+> §8 records the 291-entry audit, the caller/reference analysis, the C++ review, the codegen
+> answers, and the build/boot evidence. Where §§5-7 say "not applied"/"not rebuilt", §8 supersedes
+> them.
+
+## 1. Classification: (A) GUEST FAULT, one off
+
+Log `dist\Output\logs\worldcup2010_025.log` (58,141 B, 392 lines, last written 15:13:01) contains
+**one** fault block:
+
+- line 295 `ROUND30 exception: host RIP=0x7FFCA40F2B2F (other module base=0x7FFC9E760000 +0x5992B2F) fault_host=0x100000021`
+- line 296 `Null-page access: guest read of 0x00000021 ... refusing on-demand commit below 0x10000`
+- line 297 `Unhandled guest access violation: read of guest 0x00000021 (host 0x0000000100000021) on thread 0xF8000028`
+- line 298 `ROUND28 guest context (guest access violation (read))`
+
+Marker counts in 025: `ROUND30 fault loop` **0**, `INVALID INDIRECT CALL` **0**, `ROUND30 minidump`
+**0**, `Null-page access` **1**, `Unhandled guest access violation` **1**, `FATAL` **1**. There is no
+repetition: the Round-30 diagnostic loop does not reappear. **Classification (A).**
+
+Independent evidence (VERIFIED, not from our logs):
+
+- `Application` event **1000**, 2026-10-19 15:13:04: `Faulting application name: worldcup2010.exe
+  ... Faulting module name: worldcup2010_fifadllzf.DLL ... Exception code: 0xc0000005 ...
+  Fault offset: 0x0000000005992b2f ... Faulting process id: 0x32DC`.
+- WER minidump `C:\Users\ramic\AppData\Local\CrashDumps\worldcup2010.exe.13020.dmp` (7,700,797 B):
+  exception stream thread **27348**, code `C0000005`, address `0x7FFCA40F2B2F`, parameters
+  `0x0` (read) and `0x0000000100000021`. Module `0x7FFC9E760000` is
+  `...\dist\Output\worldcup2010_fifadllzf.DLL` (size `0x755E000`), so the fault is exactly
+  `+0x5992B2F` into the **generated fifadllzf module**, not `rexruntime.dll`.
+- The dump's ThreadContext is poisoned (`rip=0xAAAAAAAAAAAAAAAA`), so the host stack cannot be
+  recovered from it; the exception record is the usable part. The game's own dump writer did not run
+  (`%TEMP%\worldcup2010_minidumps` does not exist).
+- Free space at the time of this round: C: 72.7 GB, D: 80.2 GB.
+
+## 2. Root cause (VERIFIED): the QueryInterface chain of `sub_8323FB38` is truncated by our own override
+
+`config\fifadllzf_overrides.toml:328-330` (workspace copy
+`C:\FWC10B\fwc10stage4\WorldCup2010Rex\config\fifadllzf_overrides.toml`, Round-14 Tier 1) contains:
+
+```toml
+"8323FB38" = { end = 0x8323FB48 }
+"8323FB6C" = { end = 0x8323FB7C }
+"8323FB8C" = { end = 0x8323FBA0 }
+```
+
+`end` is exclusive, so `0x8323FB48` is exactly the instruction **after** the first `beqlr`. The
+generated body (`generated\fifadllzf_xex\worldcup2010_recomp.275.cpp:21862`) is only:
+
+```c
+// lis r11,0x3C9F / ori r11,0x47C4 / cmpw cr6,r4,r11 / beqlr cr6
+if (ctx.cr6.eq) return;
+```
+
+and then falls off the end with `r3` unchanged. The guest function is **one contiguous chain**
+(decoded from the decrypted image, base `0x82300000`):
+
+```
+8323FB38  0x3C9F47C4 -> return this
+8323FB48  r11 = this+0x24
+8323FB58  0x88B8764F -> 0x8323FBA0 -> return this+0x28
+8323FB68  0x301A1210 -> 0x8323FBB0 -> return this+0x24
+8323FB6C  0xBA8B94E2 -> return this
+8323FB7C  0x42704CE3 -> 0x8323FB8C -> return this+8
+8323FB88  otherwise  -> 0x8323FBC0
+8323FBC0  0x6BB23909 -> 0x8323FB8C -> return this+8
+8323FBD0  default    -> li r3,0; blr   (return null)
+8323FBD8  addi r3,r3,-40; b 8323FB38   (adjustor thunk, separate vtable word)
+```
+
+The 288-byte class's vtable `0x82522820` (read from the image) is
+`+0x00=0x83240030`, `+0x04=0x8323FB20` (GetType -> `0x3C9F47C4`), `+0x08=0x8323FB38` (QI),
+`+0x18=0x836D1540` (the getter). **The correct answer of this QI for `0xA6C60698` is null**
+(the tag matches none of the six chain entries, so the guest executes `li r3,0; blr`).
+
+The generated code gives `this` for every tag instead. That is the defect.
+
+## 3. The crash chain (VERIFIED)
+
+- `r30 = *(*(*(r31+8)+0xE0)+0x2C)` (`recomp.255.cpp:25343-25350`); the log's `[r8]` dump shows
+  `r31+8 = 0xB8F18B00`.
+- `r4 = 0xA6C60698` (`lis r4,-22842` / `ori r4,r4,1688`, lines 25364-25369). The log line 299 reads
+  `r4=A6C60698`; **the `0xA6960698` used in earlier working notes was a transcription error**.
+- `r3 = r30`; `call *(*(r30)+8)` (lines 25362-25376) -> the truncated `0x8323FB38`.
+- The tag is not `0x3C9F47C4`, so the body returns with `r3` unchanged; `r29 = r3`
+  (line 25379). Therefore **`r29 == r30 == 0xBE2AA530`** - no adjustment and no `r30 != r29` case
+  (VERIFIED; this closes the Round-31 inference).
+- `if (r29 == 0) goto loc_8333918C` (lines 25401-25404) is the guest's null check. It never fires.
+- `r30 = *(r29+0x664)` = `0x70616453` ("padS", line 25409); then `call *(*(r29)+0x18)` and
+  `G = *(r29+0x2C)` = `0xBD6BE1D0` (lines 25405-25417).
+- `r9 = *(G+0x1C)` = `5` (line 25418); `r5 = *(r9+0x1C)` (line 25427) is the guest read of `0x21`
+  at `0x8333916C` (`80A9001C` = `lwz r5,0x1C(r9)`), i.e. `LR+0x23C` from `sub_83338F30`.
+- The object is 288 (`0x120`) bytes, so the `+0x664` read is `0x544` bytes past its end; it landed
+  in mapped heap and did not fault, which is why the first foreign value ("padS") was accepted.
+
+Why the caller's layout does not fit: the caller expects the interface whose vtable is
+**`0x8251C45C`** (`+0=0x832141C8` dtor, `+4=0x832141A8` GetType -> `0xA6C60698`,
+`+8=0x8320F970` QI -> returns this for `0xA6C60698`). The object in the slot is the 288-byte
+animation class (`0x82522820`), which does **not** implement `0xA6C60698` - hence the QI's null check
+exists in the guest. Whether the slot legitimately holds "either kind of object" (and the check is
+the filter) or was written with a wrong pointer is the remaining open question (5.5(a)/(b) of
+Round 31 was answered as (a), but the writer of the slot was not traced).
+
+## 4. Corrections to Round 31
+
+1. **G's vptr order was swapped.** The primary vptr is **`0x825218B8` at `+0`** and the secondary is
+   **`0x825218A4` at `+0x14`** (the tables overlap with a `0x14` stride). The ctor `sub_8323FEB0`
+   (`recomp.280.cpp:22604`) stores `0x825218B8` at `+0` and `0x825218A4` at `+0x14`; the live 025
+   dump at `0xBD6BE1D0` reads `+0=0x825218B8`, `+0x14=0x825218A4`. G is therefore a **primary**
+   object, and Round-31's 5.5 decision criterion is inverted (first word `0x825218B8` = (a)).
+   Corrected in place in the Round-31 section.
+2. **The tag is `0xA6C60698`**, not `0xA6960698` (log 025 line 299, `r4=A6C60698`; `lis -22842` +
+   `ori 1688` = `0xA6C60698`).
+3. `sub_8320F970` is the QI that *does* implement `0xA6C60698` (vtable `0x8251C45C`); it is a
+   different class from the 288-byte animation object. It is not the function the caller reached.
+
+## 5. Proposed fix (not applied): strong-symbol override of `sub_8323FB38`
+
+### 5.1 Why this shape
+
+The generated function is emitted as a **weak alias** over the real body
+(`generated\fifadllzf_xex\worldcup2010_pch.h:57-78`):
+
+```c
+__attribute__((alias("__imp__sub_8323FB38")))
+__attribute__((weak, noinline)) extern "C" REX_FUNC(sub_8323FB38);
+REX_EXTERN(__imp__sub_8323FB38)
+```
+
+and the object confirms it: `llvm-nm` on the built
+`worldcup2010_recomp.275.cpp.obj` shows `00036000 T __imp__sub_8323FB38` and
+`00000000 W sub_8323FB38` (weak external). The registry, the `PPCFuncMappings` table and the
+adjustor thunk `sub_8323FBD8` all reference the symbol `sub_8323FB38`
+(`worldcup2010_register.cpp:57218`, `worldcup2010_init.cpp:57229`,
+`recomp.285.cpp:22537`), so a strong definition in another translation unit replaces all three.
+
+The override mechanism was **verified with this exact toolchain** (clang++ 18 + lld-link, COFF,
+`/nodefaultlib`): a test with the same alias/weak pattern plus a strong definition in a second
+object linked `caller` to the strong body (`mov eax,2`) rather than the weak body (`mov eax,1`).
+The full target flags were used for a `-fsyntax-only` compile of the new file: **exit 0**, both
+normally and with the off switch defined.
+
+### 5.2 Files (proposed, under `patches\`)
+
+| patch | applies to | size | SHA-256 | `git apply --check` |
+|---|---|---|---|---|
+| `round32-1-src_round32_qichain_override.cpp.patch` | `Installer/recomp-template/src/round32_qichain_override.cpp` (new, 136 lines, BSD-3 header) | 5,825 B | `C15455D257404AA61A3A00BDF2BD5B735B153D8EF2E57D6E2E7C161BEA1F37CC` | exit 0 |
+| `round32-2-CMakeLists.txt.patch` | `Installer/recomp-template/CMakeLists.txt` (one line in `target_sources(worldcup2010_fifadllzf ...)`) | 418 B | `9E96A227650AED887FFF6239145C2C00ABFA85D71C6DB13DB5F7E4DDFBE2D85E` | exit 0 |
+
+- Checked against a pristine extraction of `git HEAD` (`git archive HEAD`) and against the current
+  working tree; both `EXIT=0`. Nothing was applied.
+- The build script copies the whole template into the workspace on every build
+  (`Installer\BuildWorldCup2010.ps1:122-123`), so the new file and the CMake line reach the build
+  without touching `C:\FWC10B\...`.
+- `src/stubs.cpp` is already in the same DLL target; the new file is added next to it. The codegen
+  step is skipped when the manifest/codegen inputs are unchanged
+  (`Installer\BuildWorldCup2010.ps1:197-206`), so this is one configure + one incremental rebuild
+  (the new TU + link; the generated TUs are up to date).
+- Off switch: `-DREX_R32_DISABLE_QI_CHAIN_OVERRIDE=1` (or remove the CMake line) compiles the file to
+  an empty translation unit and the weak generated body is used again.
+
+### 5.3 What the override implements
+
+The exact chain above, with the same pointer adjustments: `0x3C9F47C4` -> this; `0x88B8764F` ->
+this+0x28 (or the chain's fall-through if `this+0x24 == 0`); `0x301A1210` -> this+0x24 (or
+fall-through); `0xBA8B94E2` -> this; `0x42704CE3` / `0x6BB23909` -> this+8 (0 if `this == 0`);
+default -> **0**. It also logs one line, once, when it sees `0xA6C60698` and returns null:
+`ROUND32 QI sub_8323FB38: tag=0x... self=0x... -> null`. If the override is not linked, that line is
+absent, which distinguishes "fix active" from "fix not applied".
+
+### 5.4 Risks and limits
+
+- The generated `__imp__sub_8323FB38` body stays in the DLL (dead, since no code references
+  `__imp__` directly); the config still describes the truncated function. This is a **targeted
+  runtime override**, not a recompiler fix - the durable fix is still to extend the extent for
+  `8323FB38` and drop/reparent the `8323FB6C`/`8323FB8C` entries. That needs a codegen run, but
+  it is **not** a one-line overlap and **not necessarily a full recompile**: `config.cpp:562-580`
+  rejects overlapping standalone boundaries (`Overlapping boundaries: ...`, `result.valid = false`),
+  and `parent` chunks are the sanctioned mechanism for pieces of one function. The earlier
+  "full rebuild" claim is corrected in §8.5: with `-Workspace` the partition sidecar keeps the TU
+  assignment and only changed TUs recompile; a build without `-Workspace` deletes `generated/` and
+  is full by construction.
+- If some code called `__imp__sub_8323FB38` directly, it would bypass the override; the generated
+  tree has **no** such reference (grep over `generated\fifadllzf_xex\*.cpp`).
+- The class's other truncated functions (`8323FB6C`, `8323FB8C`) are still registered but become
+  unreachable from this chain; no image data references them and the only callers were the blocks
+  the override replaces (`sub_8323FBA0`, `sub_8323FBC0`).
+- If the slot that holds the 288-byte object *should* hold an object implementing `0xA6C60698`,
+  the game will now skip the block instead of crashing - correct guest semantics, but a possible
+  missing animation/effect. That can be observed in the throw-in test; it does not affect safety.
+- The override assumes the chain's tag list is complete for this function; it was read from the
+  image at `0x8323FB38..0x8323FBD4` and the function is only entered at `0x8323FB38` and (via the
+  thunk) `0x8323FBD8`.
+
+## 6. Open questions
+
+1. Who writes the slot at `*(r8+0xE0)+0x2C` and with what object kind? The crash says it holds the
+   288-byte animation object; the caller expects the `0x8251C45C` interface. The QI null check is
+   designed for "not implemented", but the writer was not traced. (INFERRED: a guest design where
+   the slot is one of several kinds, filtered by QI.)
+2. Whether the same truncation produced a wrong `this+0x28`/`this+0x24`/`this+8` pointer earlier in
+   the session (tags `0x88B8764F`, `0x301A1210`, `0x42704CE3`, `0x6BB23909`). The override makes
+   those answers correct from now on, but any value already stored before the fix would persist in
+   that run only.
+3. The semantic names of the classes remain unknown (RTTI tags `0x3C9F47C4`, `0xA6C60698`,
+   `0x3D94C20C`); no name table exists in the image.
+
+## 7. What approval is needed
+
+Apply the two patches under `patches\` to the repo, rebuild **once** (`BUILD_EXIT_CODE=0` is the
+gate), then run **one** throw-in test and compare: the crash must become a skip (no `Null-page
+access`, no `ROUND28 guest context`, one `ROUND32 QI ... -> null` line), not a new stop. No push,
+no deletion, `ReXGlue/` untouched, profile XUID `0xB13EBABEBABEBABE` unchanged, Hunk A's page-0
+refusal unchanged.
+
+> **Executed 2026-10-19:** both patches applied, one incremental rebuild (`BUILD_EXIT_CODE=0`), one
+> 152 s title-screen boot (no fault, one `ROUND32 QI ... -> null`). The **throw-in test is the
+> remaining step and is left to the user**; no push, no deletion.
+
+## 8. Round 32 apply, audit and verification (2026-10-19)
+
+### 8.1 Applied state
+
+- Pre-change backup: `D:\FWC10\_backups\20261019-160925-r32apply` (`CMakeLists.txt.before`,
+  `NOTES.md.before-r32apply`, both patches, `git-diff-before.patch`, `git-HEAD.txt`,
+  `git-ls-files.txt`, `git-status-porcelain.txt`, `SHA256SUMS.txt`); a line was appended to
+  `D:\FWC10\_backups\LAST_BACKUP.txt` before the build and another after it (§8.9).
+- Applied with `git apply` (not `--check`): `round32-1-src_round32_qichain_override.cpp.patch`
+  (5,825 B, SHA-256 `C15455D257404AA61A3A00BDF2BD5B735B153D8EF2E57D6E2E7C161BEA1F37CC`) and
+  `round32-2-CMakeLists.txt.patch` (418 B, SHA-256
+  `9E96A227650AED887FFF6239145C2C00ABFA85D71C6DB13DB5F7E4DDFBE2D85E`); both exit 0.
+  `git status` now has `M Installer/recomp-template/CMakeLists.txt` and the new untracked
+  `Installer/recomp-template/src/round32_qichain_override.cpp`. No config entry was changed.
+- Off switch unchanged: `-DREX_R32_DISABLE_QI_CHAIN_OVERRIDE=1` (or removing the CMake line)
+  compiles an empty TU and the generated weak body is used again.
+
+### 8.2 Task 1 - audit of all 291 override entries (both copies)
+
+**Method (VERIFIED).** The two copies are byte-identical, SHA-256
+`6DE35890AE9D8A6C5043CEDF56331D82040B15EDFFAB195A49B2F714E9D2B0F3`, 291 entries each. Decoding
+used the decrypted flat image `C:\Users\ramic\AppData\Local\Temp\opencode\xexdump\fifadllzf.dec.bin`
+(flat image; `file_offset = guest_addr - 0x82300000`, code/data big-endian; the PE section raw pointers are not used).
+`.pdata` at RVA `0x2D6000` decodes as 58,601 big-endian `RUNTIME_FUNCTION` entries
+(`begin + ((info >> 8) & 0x3FFFFF) * 4`). For each entry the last word at `end-4` was decoded,
+then the word at `end`; `end` was checked against every `.pdata` start/end, every other override
+start, and every other override extent. Terminators accepted: `blr` (`bclr` BO=20 LK=0), `bctr`
+(`bcctr` BO=20 LK=0), unconditional `b` (opcode 18 LK=0), `tw`/`twi`, `sc`/`rfi`/`rfid`.
+Non-terminators: `bclr`/`bcctr` with BO!=20 (conditional return, falls through), `bc` (falls
+through), `bl`/`bctrl`/`bclrl` (link call; the post-call path is lost), and ordinary instructions.
+
+**First pass - last-instruction class (VERIFIED).**
+
+| class | entries | last instruction |
+|---|---:|---|
+| hard terminator | **289** | `bctr` 138, `b` 91, `blr` 60 |
+| conditional return | **2** | `bclr 12,26` = `beqlr cr6` |
+| conditional branch / ordinary / link call | 0 | - |
+
+- All 91 `b` endings target **outside** their own extent (0 backward/inside targets), so they are
+  tail branches, not truncated loops.
+- The 291 TOML keys (starts) are unique; no duplicate starts.
+- There are **no** entries whose *last* instruction is a conditional branch, an ordinary
+  instruction, or a link call.
+
+**Second pass - reachability of the word at `end` (VERIFIED).** A hard last instruction does not
+by itself prove the extent is whole: an earlier branch may target `end`. Every word of every
+extent was decoded (`deepaudit.py`), and the next word's registration was checked against the
+generated `worldcup2010_init.cpp` / `worldcup2010_register.cpp` and `DEFINE_REX_FUNC` symbols.
+
+| sub-class of the 289 hard-terminator entries | entries | finding |
+|---|---:|---|
+| followed by padding / a registered start / `.pdata` boundary | **210** | clean boundary |
+| next word is real code but **not** a registered start; no branch inside targets it | **67** | not the same logical function; not truncation |
+| interior **conditional branch targets `end`**; target is a registered function | **10** | **split extents** - codegen tail-calls the registered target |
+| last `b` targets a shared body 8/0x10 bytes past `end`; bytes between are separate thunks | **2** | normal adjustor-thunk tail, not truncation |
+
+The 10 split extents are `L38 0x82A9F6C8->0x82A9F70C`, `L52 0x8265A330->0x8265A354`,
+`L100 0x82AE3F70->0x82AE3F90`, `L195 0x8314DB68->0x8314DB80`, `L213 0x837EDBA0->0x837EDBE4`,
+`L258 0x83367538->0x83367574`, `L265 0x837A6C70->0x837A6CA0`, `L297 0x82F1EFE8->0x82F1F01C`,
+`L305 0x831ADE50->0x831ADE7C`, `L348 0x83884CA0->0x83884CEC`. They are 5 in Stage 6b
+(L38/L52/L100/L195/L213), 4 in Stage 6d (L258/L265/L297/L305) and 1 in Stage 6e (L348). Every
+target is registered (`worldcup2010_init.cpp`) and has a `DEFINE_REX_FUNC`; the generated entry
+bodies all contain `sub_<end>(ctx, base); return;` (verified for all 10 by `tailcheck.py`;
+`L348` has four such sites). These are **config-incomplete** (the function is split into two
+registered functions), but they are not the FB38/FB6C defect: the branch is explicit, so the
+codegen emits a tail call to the correct body. No semantic loss is proven. The 2 thunks are
+`L153 0x82BD9AF0->0x82BD9B00` and `L178 0x82BDCED0->0x82BDCEE8`; the next bytes are other
+`addi r3,r3,-delta; b` thunks, so the `b` is a tail branch to the shared body, not a
+continuation of this thunk.
+
+**Semantic truncation list (the only two of the FB38 class).**
+
+| line | start -> end | last word @ address | decoded | next @ end | word | finding |
+|---:|---|---|---|---|---|---|
+| 328 | `0x8323FB38 -> 0x8323FB48` | `0x4D9A0020` @ `0x8323FB44` | `bclr 12,26` = `beqlr cr6` | `0x8323FB48` | `0x3D4088B8` = `lis r10,0x88B8` | The next instruction is the **same chain's** second tag test (`0x88B8764F`); the first `beqlr` is a conditional return and its fall-through is real code. The generated body (`recomp.275.cpp:21862`) is only the first compare + `if (ctx.cr6.eq) return;`. |
+| 329 | `0x8323FB6C -> 0x8323FB7C` | `0x4D9A0020` @ `0x8323FB78` | `bclr 12,26` = `beqlr cr6` | `0x8323FB7C` | `0x3D604270` = `lis r11,0x4270` | Same defect: the next instruction is the chain's `0x42704CE3` test. The generated `sub_8323FB6C` has only the `0xBA8B94E2` compare + `if (ctx.cr6.eq) return;`. |
+
+The audit script's mnemonic printer labels BO=12 as `bneqlr`; the raw encoding `0x4D9A0020` is
+`bclr 12,26` (BO=12 = branch if CR6.eq true), i.e. `beqlr cr6`. The two verdicts stand on the raw
+word, not on the label.
+
+`.pdata` does **not** cover `0x8323FB38..0x8323FBE0`: the nearest runtime functions are
+`0x8323FA88..0x8323FB20` and `0x8323FBE0..0x8323FC4C`. These are no-block stubs, so `.pdata`
+cannot be used to excuse the boundary.
+
+**14 Tier-1 stubs (13 fifadllzf + 1 default).**
+
+| stub | end | last instruction | verdict |
+|---|---|---|---|
+| `0x8323FB38` | `0x8323FB48` | `beqlr cr6` | **RISK** (truncated same chain) |
+| `0x8323FB6C` | `0x8323FB7C` | `beqlr cr6` | **RISK** (truncated same chain) |
+| `0x8323FB8C` | `0x8323FBA0` | `subfic/addi/subfe/and; blr` | CLEAN (complete `(this==0)?0:this+8`) |
+| default `0x8211A170` | `0x8211A178` | `addi r3,r3,8; b 0x82118AB8` | CLEAN; next `0x8211A178` is a separate `addi r3,r3,-8` thunk |
+| other 10 (`0x82A63768`, `0x82ADF698`, `0x82ADF6B0`, `0x82BCBDB8`, `0x82DA6148`, `0x831A11B8`, `0x83232D58`, `0x837045C0`, `0x83704A30`, `0x8375B9D0`) | per Round 14 | 3 `bctr`, 5 `b`, 2 `blr` (all targets outside) | CLEAN |
+
+**9 thunks `0x837FD0F0..0x837FD170`:** all nine end in `bctr`; each `end` is the next thunk's
+registered start. CLEAN.
+
+**Earlier batches:** Stage 6a `0x835F7700` CLEAN (`blr`); Stage 6b 183 last-instruction-clean
+(5 of them are split; see above); Stage 6c 2 CLEAN
+(`0x82EEFB68` and `0x82883A48`, both `blr`); Stage 6d 80 last-instruction-clean (4 of them are
+split; see above); Stage 6e `0x83884CA0` **SPLIT** (`blr` at the end, but four interior
+`beq 0x83884CEC`; `0x83884CEC` is registered and the generated body tail-calls it); Stage 6f
+`0x836A24B0` CLEAN (`b 0x8369C858`; next `mfspr`); Round 27 `0x8295FB50` CLEAN (`b 0x8295F988`).
+
+**Correction (Task 5).** The Round-14 statement that Tier 1 consists of standalone "leaf"/"epi"
+stubs is wrong for `0x8323FB38`, `0x8323FB6C` and `0x8323FB8C`: they are three entry points into
+one 0xA0-byte chain. The validator's "max reachable + 4" treated the conditional return `beqlr` as
+a terminator, so the first two extents stop after their first `beqlr`; `0x8323FB8C` is the one
+piece that is genuinely complete. The correction is also placed under the Round-14 Tier-1 table
+(`# Round 15` section) so the old table is not read as still true.
+
+### 8.3 Task 2 - callers and references of `0x8323FB38 / FB6C / FB8C`
+
+**Direct branches in the guest `.text`** (`0x82650000..0x838D8DB4`, every 4-byte word decoded):
+exactly **5** branches target the six addresses, and all five are inside the chain:
+
+| site | instruction | target | role |
+|---|---|---|---|
+| `0x8323FB58` | `beq cr6` (`0x419A0048`) | `0x8323FBA0` | tag `0x88B8764F` -> FBA0 |
+| `0x8323FB88` | `bne cr6` (`0x409A0038`) | `0x8323FBC0` | tag `0x42704CE3` mismatch -> FBC0 |
+| `0x8323FBB4` | `beq cr6` (`0x419AFFB8`) | `0x8323FB6C` | FBA0 null-guard -> FB6C |
+| `0x8323FBCC` | `beq cr6` (`0x419AFFC0`) | `0x8323FB8C` | tag `0x6BB23909` -> FB8C |
+| `0x8323FBDC` | `b 0x8323FB38` | `0x8323FB38` | adjustor thunk `0x8323FBD8` |
+
+There is **no** `bl`/direct call to any of the three from outside the chain. Generated-tree greps
+agree: the only `sub_8323FB38(ctx, base)` is `recomp.285.cpp:22537` (thunk `sub_8323FBD8`), the
+only `sub_8323FB6C(ctx, base)` is `recomp.211.cpp:21437` (`sub_8323FBA0`'s `beq`), and the only
+`sub_8323FB8C(ctx, base)` is `recomp.153.cpp:22463` (`sub_8323FBC0`'s `beq`). `FBA0` and `FBC0`
+have no call sites of their own.
+
+**Data/table references** (aligned big-endian words in `.rdata`/`.data`/`.pdata`):
+
+| word address | value | context |
+|---|---|---|
+| `0x8252274C` | `0x8323FB38` | table at `0x82522744`: `[0x8323FA18, 0x8323FB20, 0x8323FB38, ...]` (slot +8) |
+| `0x82522828` | `0x8323FB38` | primary vtable `0x82522820`: `+0=0x83240030`, `+4=0x8323FB20`, `+8=0x8323FB38` |
+| `0x82522710` | `0x8323FBD8` | secondary vtable; preceding word `0x8252270C=0x8323FB30` (the `-0x28` GetType thunk) |
+| `0x825227DC` | `0x8323FBD8` | second secondary vtable |
+
+**No** data word equals `0x8323FB6C`, `0x8323FB8C`, `0x8323FBA0` or `0x8323FBC0`. A broad
+materialization scan (every `lis rD,imm` followed within 6 instructions by `ori`/`oris`/`addi` on
+the same register, any high half, to catch `lis 0x8324` + negative `addi`) produced **0** values
+equal to any of the six addresses. (The `0xFB38`/`0xFB6C`/`0xFB8C` low-half `addi` hits in
+`.text` are unrelated stack offsets.)
+
+**What each entry point expects.**
+
+- `0x83338F30` (the crash caller; `recomp.255.cpp`: QI call at 25362-25376, null check at 25401):
+  loads `r11=*(r30)`, sets `r4=0xA6C60698`, `r3=r30`, loads `r10=*(r11+8)`, `bctrl` with
+  `LR=0x83339114`. After the call: `r9=*(r30+4)`, `r29=r3`, `r11=r9-1` (overwrites r11),
+  `CR0=addic.`, then (after a `+12` slot call) `cmplwi cr6,r29,0` / `beq 0x8333918C`. It consumes
+  only `r3`; `r10` is never read after the call, and `r11`/`CR0`/`CR6` are overwritten. It expects
+  **the interface pointer or null** and has a skip path for null.
+- Thunk `0x8323FBD8`: `addi r3,r3,-0x28; b 0x8323FB38`. It is reached from the two secondary
+  vtables; the override therefore sees the **primary** pointer after the adjustment and returns
+  primary-relative `this+0x24` / `this+0x28` / `this+8`.
+- `FBA0` (tag 2): `r11=this+0x24; subfic/subfe/and` -> `(plus24==0)?0:plus24+4`; if nonzero
+  `mr r3,r11; blr`, else `beq 0x8323FB6C`. It expects the chain to continue at FB6C only for an
+  invalid `this`. `FBC0` (tag 6): `0x6BB23909 -> 0x8323FB8C`, else `li r3,0; blr`.
+- **FB6C direct?** Only from `FBA0`'s `beq` at `0x8323FBB4`; **FB8C direct?** Only from `FBC0`'s
+  `beq` at `0x8323FBCC`. Since `FBA0`/`FBC0` have no external data/code references, no caller
+  reaches FB6C or FB8C directly. The strong FB38 override covers every reachable path, so those
+  symbols do not need their own override. (Static proof; a runtime-computed pointer that is not
+  in the image would not be visible to this scan - INFERRED low risk.)
+- The registry still maps all six guest addresses (`worldcup2010_init.cpp:57229-57234`,
+  `register.cpp:57218-57223`), but registration is a table, not a jump; the only entered addresses
+  are the vtable slots above. The FB38 mapping now points at the override (§8.6).
+
+### 8.4 Task 3 - C++ review against the decoded chain
+
+Source: `Installer/recomp-template/src/round32_qichain_override.cpp:78-134`. The guest words are
+from the image (`0x8323FB38..0x8323FBD4`); the C++ line numbers are from the applied file.
+
+| tag | guest instructions | C++ | returned `r3` |
+|---|---|---|---|
+| `0x3C9F47C4` | `lis r11,0x3C9F; ori r11,0x47C4; cmpw cr6,r4,r11; beqlr cr6` | `if (tag == 0x3C9F47C4u) return;` (lines 84-86) | `this` (untouched) |
+| `0x88B8764F` | `lis r10,0x88B8; addi r11,r3,0x24; ori r10,0x764F; cmpw; beq 0x8323FBA0`; FBA0 `subfic r10,r11,0; addi r11,r11,4; subfe r10,r10,r10; and r11,r10,r11; cmplwi r11,0; beq 0x8323FB6C; mr r3,r11; blr` | `plus24=self+0x24; adjusted=(plus24!=0)?plus24+4:0; if (adjusted!=0){r3=adjusted; return;}` (88-99) | `this+0x28` (valid `this`); 0 if `this+0x24` is null |
+| `0x301A1210` | `lis r10,0x301A; ori 0x1210; cmpw; beq 0x8323FBB0`; FBB0 `cmplwi r11,0; beq 0x8323FB6C; mr r3,r11; blr` (r11=`this+0x24`) | `else if (tag==0x301A1210u){ if (plus24!=0){r3=plus24; return;} }` (100-108) | `this+0x24` |
+| `0xBA8B94E2` | `lis r11,0xBA8B; ori 0x94E2; cmpw; beqlr cr6` | `if (tag == 0xBA8B94E2u) return;` (110-113) | `this` |
+| `0x42704CE3` | `lis r11,0x4270; ori 0x4CE3; cmpw; bne 0x8323FBC0`; fall-through FB8C `subfic r11,r3,0; addi r10,r3,8; subfe r11,r11,r11; and r3,r11,r10; blr` | `if (tag != 0x42704CE3u) { ...tag 6 / default... }` then `r3=(self!=0)?self+8:0` (116-133) | `this+8` (0 if `this==0`) |
+| `0x6BB23909` | FBC0 `lis r11,0x6BB2; ori 0x3909; cmpw; beq 0x8323FB8C`; else `li r3,0; blr` | inside `if (tag != 0x42704CE3u)`: `if (tag==0x6BB23909u){r3=(self!=0)?self+8:0; return;}` (118-121) | `this+8` (0 if `this==0`) |
+| default | `0x8323FBD0 li r3,0; blr` | `r3=0; return;` (123-129) | `0` |
+| `0xA6C60698` (not a chain tag) | default path | one-shot log inside the default branch, then `r3=0` (124-129) | `0` |
+
+The C++ matches the decoded semantics, including the two null-guard fall-throughs. Note the guest
+instruction at `0x8323FBB8` is `or r3,r11,r11`, canonicalized as `mr r3,r11` (generated
+`// mr r3,r11` / `ctx.r3.u64 = ctx.r11.u64`); the C++ assignments match that. `FB8C`'s
+`subfic/subfe/and` idiom is exactly `(self==0)?0:self+8`.
+
+**Register side effects.** The guest chain writes `r10` and `r11` (tag constants, `this+0x24`,
+`this+0x28`), `CR6` (each `cmpw`/`cmplwi`) and `CA` (the `subfic/subfe` sequences). The override
+writes **only `ctx.r3`** (plus host-side `std::atomic` state and the log call); it never touches
+`ctx.r10`, `ctx.r11`, `ctx.cr6`, `ctx.xer` or `ctx.lr`. The traced caller `0x83338F30` reads only
+`r3` (as `r29`), overwrites `r11` at `25381-25383`, overwrites `CR6` at `25401`, and never reads
+`r10`; `LR` was set by the caller. For any other ABI-conforming caller, `r10`/`r11`/`CR6`/`CA` are
+volatile (caller-saved), so leaving them alone is safe. **VERIFIED** for `0x83338F30`; **INFERRED**
+(ABI) for untraced callers.
+
+**Tested vs reasoned.** Runtime-tested: the `0xA6C60698` -> default -> null path, once, at
+16:32:39 in `worldcup2010_026.log`; the game did not fault. Compiled-code-verified: the six tag
+immediates are present in the DLL disassembly at `0x18719C5A4..` (`cmpl $0x3c9f47c4`,
+`cmpl $0x88b8764f`, `cmpl $0x301a1210`, ...); the `cmpl $0xa6c60698` is at `0x18719C5E7` and
+the log string `lea` is at `0x18719C681`.
+**Not runtime-tested:** the override logs only `0xA6C60698`, so the 152 s log does not show
+whether the six chain tags (`0x3C9F47C4`, `0x88B8764F`, `0x301A1210`, `0xBA8B94E2`,
+`0x42704CE3`, `0x6BB23909`) were queried; their mapping is reasoned from the image and confirmed
+by the compiled x86, not by a runtime hit.
+
+### 8.5 Why overlapping extents are rejected, and the incremental/full rebuild question
+
+**Overlapping extents (VERIFIED).** `ReXGlue/src/codegen/config.cpp:562-580`:
+
+```cpp
+// Check for overlapping function boundaries (standalone functions only)
+...
+if (!cfg.isChunk()) {
+  sorted.emplace_back(addr, cfg.getSize(addr));
+}
+...
+if (sorted[i].first < prev_end) {
+  result.errors.push_back(fmt::format(
+      "Overlapping boundaries: 0x{:08X}+0x{:X} overlaps 0x{:08X}+0x{:X}", ...));
+  result.valid = false;
+}
+```
+
+A configuration that extends `8323FB38` to `0x8323FBD8` while keeping the standalone `8323FB6C`
+(`end 0x8323FB7C`) and `8323FB8C` (`end 0x8323FBA0`) entries is therefore a fatal validation error,
+not a warning. The sanctioned way to describe pieces of one function is the `parent` chunk field
+(`config.h:43-49`: "A 'chunk' is simply a function entry with a non-zero parent field"), which the
+overlap check explicitly skips via `if (!cfg.isChunk())`. This is the same rule that produced the
+Round-14 "4 conflict" finding: "the CFG extent genuinely contains a *sibling* registered entry, so
+no single contiguous `end` both covers the reachable code and avoids overlapping"
+(`NOTES.md:2208-2209`).
+
+**Why the durable fix was said to need a full recompile - corrected.** The earlier §5.4 wording
+"a codegen run and a full rebuild" is too strong. The observable reason earlier override-only
+rebuilds recompiled only the affected files (14 TUs in Round 15) is the stable partition sidecar
+plus a resume build:
+
+- `Installer/BuildWorldCup2010.ps1:77` `$resume = ![string]::IsNullOrWhiteSpace($Workspace)`;
+  lines 176-184 delete `generated\default` and `generated\fifadllzf_xex` **only when `!$resume`**.
+- `codegen_writer.cpp:278-279` `OutputPartition::Load(outputPath / kPartitionFileName)` then
+  `Assign(sizes, maxFileBytes)`; `output_partition.cpp:102-150` reuses each existing
+  `addressToFile_` assignment and only places new functions into the smallest bucket, so the TU
+  numbers do not shift just because a function grew.
+- `codegen_writer.cpp:345` `switch (WriteIfChanged(filePath, content))`; unchanged TUs are skipped
+  (`Unchanged, skipping write`). Ninja then compiles only files whose content changed.
+
+So a durable fix built **with `-Workspace`** should be incremental: the codegen re-runs because a
+config file is in the fingerprint (`BuildWorldCup2010.ps1:197-207`), rewrites the TUs containing
+`FB38`/`FB6C`/`FB8C` (and the global init/register/funcs files), and leaves the rest unchanged. A
+build **without `-Workspace`** deletes `generated/` first, which also deletes
+`codegen.partition.json`; `ChooseFileCount`/`Assign` then repartition from scratch
+(`output_partition.cpp:104-113`), so the TU assignment can change broadly and the compile is full
+**by construction**. The durable fix has not been run, so the exact changed-TU set is **INFERRED**,
+not measured. The current build used `-Workspace`, so the codegen skipped
+(`Codegen summary: 0 written, 2 unchanged`) and only the new TU + link were compiled, as predicted.
+
+### 8.6 Task 4 - one rebuild and DLL-level proof
+
+**Build (VERIFIED).** Command:
+`Installer\BuildWorldCup2010.ps1 -GameData ...\dist\GameData -Output ...\dist\Output -Workspace C:\FWC10B\fwc10stage4 -SourceBuild -Jobs 2`; wrapper output 62 lines;
+`BUILD_EXIT_CODE=0`. Key lines:
+
+```
+[8/36] Generating recompiled code for worldcup2010
+Codegen summary: 0 written, 2 unchanged, 0 deleted, 2 module(s) up to date
+[9/13] Building CXX object .../worldcup2010_fifadllzf.dir/src/round32_qichain_override.cpp.obj
+[10/13] Linking CXX shared library worldcup2010_fifadllzf.dll
+[12/13] Linking CXX executable worldcup2010.exe
+```
+
+Artifacts:
+
+| file | size | SHA-256 | note |
+|---|---:|---|---|
+| `worldcup2010_fifadllzf.dll` | 123,055,616 B | `502744EE626E6ED7E687132E658244C4D4F70199E5BE578B0845952BE63113F9` | was 123,053,568 B (`CFF87086...`); +2,048 B |
+| `worldcup2010.exe` | 8,022,528 B | `74481EBD88EE454166F28A353CD09B063E86384EB4DDADFF9628E9D909BC15BA` | relinked |
+| `rexruntime.dll` | 10,216,960 B | `715E0D917B315358AFEEB3C9493466B0A2E17F67E6FD9FB3B87A4DB974CD0E1F` | same size, new hash; relinked incidentally after the configure rebuilt `debug_overlay.cpp`; this round's patch is project-only |
+
+**Strong vs weak (VERIFIED).** `llvm-nm`:
+
+- new TU `round32_qichain_override.cpp.obj` (51,082 B): `00000000 T sub_8323FB38` (strong), plus
+  the `ROUND32 QI sub_8323FB38...` string symbol.
+- generated `worldcup2010_recomp.275.cpp.obj`: `00036000 T __imp__sub_8323FB38` and
+  `00000000 W sub_8323FB38` (weak).
+
+**In the linked DLL (VERIFIED).** No symbols are exported, so the image was parsed directly:
+
+- `PPCFuncMapping` entry (16 bytes: `size_t guest; PPCFunc* host`) at file offset `0x73F1B00`
+  (RVA `0x73F3700`): `guest=0x8323FB38`, `host=0x18719C580` (RVA `0x719C580`). The contiguous
+  neighbours are `FB6C` (`0x73F1B10`), `FB8C` (`0x73F1B20`), `FBA0`, `FBC0`, `FBD8`, so this is the
+  real mapping array.
+- Disassembly at `0x18719C580` is the full chain: `cmpl $0x3c9f47c4` at `0x18719C5A4`,
+  `cmpl $0x88b8764f` at `0x18719C5AC`, `cmpl $0x301a1210` at `0x18719C5C6`, `cmpl $0xa6c60698`
+  at `0x18719C5E7`; the `ROUND32 QI` string is at RVA `0x720DED8`, loaded by the `lea` at
+  `0x18719C681`. This is the override, not the one-compare weak body.
+- The `-0x28` thunk: guest `0x8323FBD8` -> host `0x6415CA0`; bytes at `0x6415CA0` are
+  `48 83 01 D8 E9 D7 68 D8 00` = `add qword ptr [rcx], -0x28; jmp 0x719C580`. This is the only
+  `E8`/`E9` in the image whose target is `0x719C580`.
+- The generated `__imp__sub_8323FB38` body remains in the image but is unreferenced; the registry
+  and the only direct caller both resolve to the strong override.
+
+### 8.7 Task 4 - 152 s title-screen boot
+
+- Window `2010 FIFA World Cup South Africa PC` at 0.9 s; screenshots at 20/40/60/90/120/150 s
+  (223,343 / 212,641 / 231,268 / 5,764 / 516,556 / 512,131 B); still running at 152 s, then killed.
+- Log volume: **1 file, `worldcup2010_026.log`, 47,613 B, 282 lines**, last write 16:33:29
+  (Round 31 reference: 48,269 B / 284 lines).
+- **New functional line (exactly one):**
+  `[2026-10-19 16:32:39.508] [info] [krnl] [t25992] ROUND32 QI sub_8323FB38: tag=0xA6C60698 self=0xBE2A6CE0 -> null`
+- Fault markers: `Null-page access` **0**, `Unhandled guest access violation` **0**,
+  `ROUND28 guest context` **0**, `FATAL` **0**, `INVALID INDIRECT CALL` **0**,
+  `ROUND30 fault loop` **0**, `ROUND30 minidump` **0**.
+- Known benign/noise: 65 `ROUND30 exception: host RIP` lines (Round 31: 67), 42 `ROUND29D` lines
+  (Round 31: 46; the functional set is present - 4 sign-in, per-index XUID, aggregate/enumerator,
+  content-create). Asset IDs, shader counts and pipeline counts differ from Round 31 because the
+  boot's random/flow path differs; no new message class other than `ROUND32`.
+- No `worldcup2010` process was left running after the kill.
+
+### 8.8 What remains
+
+1. **Throw-in test (user).** The title-screen boot hit the crash tag once and returned null without
+   a fault; the original crash was after a throw-in cutscene. The throw-in test is the decisive
+   test and has not been run by this round.
+2. If it still stops, capture the `ROUND32` line (if any) plus the fault block. Only
+   `0xA6C60698` is logged; a different tag would not appear, so the fault block and the
+   `self` pointer are the evidence.
+3. Durable fix: extend `8323FB38`, drop/reparent `8323FB6C`/`8323FB8C` (and account for the
+   discovered `FBA0`/`FBC0` targets), re-run codegen with `-Workspace`, then rebuild. Not done;
+   see §8.5 for the overlap rule and the incremental expectation.
+4. No push, no deletion; profile XUID and Hunk A unchanged.
+
+### 8.9 Backup artifacts and `LAST_BACKUP.txt`
+
+- Pre-change: `D:\FWC10\_backups\20261019-160925-r32apply` contains `CMakeLists.txt.before`,
+  `NOTES.md.before-r32apply`, both patches, `git-diff-before.patch`, `git-HEAD.txt`,
+  `git-ls-files.txt`, `git-status-porcelain.txt`, `SHA256SUMS.txt`. The pre-change DLL was
+  **not copied**; its size and SHA-256 (`CFF87086...`, 123,053,568 B) are recorded. The
+  source/config/notes state is recoverable from the backup + git; the old binary is not
+  bit-recoverable.
+- Post-change: `...\after\` holds the build transcript, boot report, `worldcup2010_026.log`,
+  the audit scripts + `audit.json`, the six screenshots, the applied source and `CMakeLists.txt`,
+  the updated `NOTES.md`, `git-status-after.txt`, `git-diff-after.patch`, and `hashes.txt`
+  (DLL/EXE/rexruntime size, SHA-256, timestamp; log/notes/source hashes).
+  `SHA256SUMS.after.txt` hashes every file under `after\`.
+- `D:\FWC10\_backups\LAST_BACKUP.txt` has the pre-build line
+  (`20261019-160925-r32apply  Round 32 APPLY BEFORE BUILD ...`), the post-build line
+  (`... AFTER build+boot ...`: DLL/EXE hashes, log size/lines, `ROUND32=1`, `fault=0`), and the
+  audit-refinement line (`... AFTER audit refinement ...`: the 10 split extents and the final
+  `NOTES.md` SHA-256).
+- No push, no deletion; `ReXGlue/` untouched.
+
+
+## Select Team globe hit-test investigation (2026-10-19, read-only)
+
+**Scope:** No build, game launch, source/config change, or asset extraction. The user's `data1.big` was opened read-only and only its index / selected entry bytes were read. Before this append, `NOTES.md` was copied byte-for-byte to `D:\FWC10\_backups\NOTES-before-select-team-20261019-212131.md` (same SHA-256 as pre-append note: `85E17780F853A537B411BD9F2DC49C6F7F552945535B43EF9C60DAC7301657E7`). Existing user changes and unrelated backup files were preserved.
+
+### VERIFIED
+
+- `data1.big` indexes `data/sceneassets/globe/countries.msh` (offset `0x0DE28670`, 2,519,568 B), immediately followed by `countries_select.msh` (`0x0E08F880`, 2,680,216 B), then `globe_0.rx3` and `globe_1.rx3`. The selected mesh begins `00 01 87 A8 3D 00 00 00 ...`; it has no readable ASCII country names/IDs in the sampled header. The first BE32 is `0x187A8` (100,264), followed by float-like coordinate bytes. **This is not enough to establish the mesh schema, vertex count semantics, per-country submeshes, IDs, bounds, or absence of such metadata.** No extraction or writes to the archive occurred. Archive SHA-256 observed: `9A598E86CF63CA044CA7D0231DA3413A14258D180B9BF80D54E0B61E4FBD84A9`.
+- UI archive entries include `playnow/globehubscreen.big` (8,192 B), `playnow/panels/teamselectpanel.big` (11,140 B), and `components/teamselector.big` (8,644 B). Readable embedded strings include `GLOBE_HU`, `CONFEDER`, `mcConfed`, `MOVE_CUR`, `Selected`, and `TeamSelector::initRules`. These are UI asset strings, not guest-code symbols or proof of a particular hit-test.
+- The only traced generated-code `XamInputGetState` wrapper is `sub_8319BEC0` (`mr r5,r4; li r4,1; b 0x838d7eac`). A caller at `sub_82A74ED0` polls it in a loop, then handles button/keystroke-like data (`lhz` at stack offsets 96/98/100, flags, and `XamInputGetKeystrokeEx`-style helper calls). This is generic input/event handling; no evidence connects it to Select Team or right-stick cursor motion.
+- `ReXGlue` input fields are signed 16-bit values (`include/rex/input/input.h`); SDL maps right X/Y to `thumb_rx`/`thumb_ry` and inverts Y. This confirms the runtime representation, not which guest screen consumes the values.
+
+### INFERRED / unresolved
+
+- Asset adjacency and names suggest a selectable-country globe mesh, but do not prove ownership, load call, marker data layout, or interaction semantics. Searches of generated C++ and runtime source did not locate the literal asset path or a loader reference; packaged `.big` UI components are binary and do not name their native guest handler in an immediately traceable way.
+- **The hit-test mechanism remains undetermined**: no ray/nearest-point CPU routine, GPU ID-buffer/readback call, or other selection path was isolated. Accordingly there is no defensible quote of the hit-test instructions/call site, no relevant VMX/float sequence to compare against Xenon behavior, and no basis to claim an Xenia shared failure is due to math or readback. The earlier readback defaults are not evidence that this screen uses either path.
+- The input caller identified above is not enough to identify thumb sampling; do not treat it as the Select Team handler.
+
+### Diagnostic decision
+
+No diagnostic diff is justified yet: without the actual hit-test function there is no verified point to instrument and logging generic input could mislead. No diff was created, applied, or checked. The user's manual readback experiments remain pending. Further source-level progress needs a reliable route from the UI component's `MOVE_CUR`/`CONFEDER` event binding or asset loader to the guest callback (or a runtime trace the user authorizes).
+
+## Team globe replacement feature — Phase 1 location pass (2026-10-19)
+
+**Read-only investigation.** No source/config edits, build, launch, or game-data extraction. The only repository writes for this pass are this NOTES append and the matching backup-ledger record; the existing working tree was inspected and preserved. Immediately before these documentation writes, byte-for-byte backups were made:
+- `D:\FWC10\_backups\NOTES-before-team-globe-phase1-20261019-212421.md` (pre-write SHA-256 `1A91A1D3A273C74F3996567D687EE17361CE5B552CAF7214D768324B1DC6A24C`)
+- `D:\FWC10\_backups\LAST_BACKUP-before-team-globe-phase1-20261019-212421.txt` (pre-write SHA-256 `BF642FD03CFE02D5FB72C0BE367665F5402A8EA0D3F60C755F29CB5A54AFAB48`)
+
+### VERIFIED
+
+- In `data1.big`, the entries are adjacent: `data/sceneassets/globe/countries.msh` (offset `0x0DE28670`, 2,519,568 bytes), `countries_select.msh` (`0x0E08F880`, 2,680,216 bytes), `globe_0.rx3`, and `globe_1.rx3`. The selected mesh's first bytes are `00 01 87 A8 3D 00 00 00 ...`; there is no readable country label in the sampled header. This does **not** decode the mesh schema or establish whether it has per-country parts/IDs/bounds. Marker coordinates were not separated from the mesh or any other data.
+- The three relevant UI assets are `playnow/globehubscreen.big` (8,192 bytes), `playnow/panels/teamselectpanel.big` (11,140 bytes), and `components/teamselector.big` (8,644 bytes). Readable strings include `GLOBE_HU`, `CONFEDER`, `mcConfed`, `MOVE_CUR`, `Selected`, `localEventHandler` (truncated by binary/string boundaries), and `TeamSelector::initRules`. These confirm labels/names occur in assets, but are not themselves code references to guest callbacks.
+- Searching all generated guest `.cpp`/`.h` for those exact event/class strings did not find code literals. Candidate hashes were computed (CRC32 and FNV-1a32, uppercase bytes) for `MOVE_CUR` (`CRC 8c2684b2`, FNV `6ebc85f1`), `GLOBE_HU` (`f16719f4`, `3504a798`), and `CONFEDER` (`41a0df89`, `4b0a63e1`). These candidate 32-bit values were not found in the sampled UI assets in either byte order; no hash algorithm is established, so this is not a definitive negative result.
+- Guest controller wrapper `sub_8319BEC0` forwards `(user, state*)` to import `XamInputGetState` (`mr r5,r4; li r4,1; b 0x838d7eac`). A caller in `sub_82A74ED0` loops across devices and processes state/keystroke fields. It is generic input polling; no call edge connects it to the globe screen. Searching generated files for literal signed loads at offsets `+12` and `+14` did not identify a function reading both as right-stick values. No 2D cursor/angle storage location was established.
+- The `teamselectpanel.big` embedded string `MOVE_CUR` and `mcConfed` suggests an event/panel path. No selection variable, setter, team-changed notification, arrow/left-stick update path, or flag/stats refresh routine was located in guest code.
+- Runtime source inspection found no general BIG4/game UI component parser; the visible BIG4 use in ReXGlue is the specialized font loader (`src/ui/game_ui_fonts.cpp`). The guest engine appears to own these UI components, but exact load/dispatch path was not traced.
+
+### INFERRED / unresolved
+
+- The UI names suggest event-driven team-selection behavior; they do not prove whether `MOVE_CUR` is a cursor event, a movement action, or an event gated on a UI state not reached. The shared symptom in Xenia and our build is compatible with an original-game logic/state issue, but does not prove one.
+- No nation marker table, cursor coordinate, selected-team memory, callback target, or hit-test was identified. Therefore no evidence-based choice among CPU nearest-point, CPU mesh ray test, GPU readback, or missed state-gated event is possible. No instruction-level Xenon/recompiler analysis applies yet.
+- **Replacement feasibility: LOW on current evidence** (INFERRED). **Status: ACTIVE — dynamic memory analysis is the approved current approach;** prior static replacement feasibility remains LOW and is superseded by this investigation. The visible panel and mesh are not enough to safely choose and update a team. Host-side replacement would need a verified source for crosshair coordinates and nation point data plus the game's own selection setter/notification; writing state by guessed address risks corrupting team selection and bypassing dependent UI/audio updates.
+
+### Smallest design if the real handler proves unrepairable (proposal only)
+
+At a verified per-frame globe-screen update/override hook, read the game's current cursor in its native coordinate space and a verified nation-point list; select the nearest eligible point only while the globe/team-select state is active and when cursor movement or the current hovered nation changes. Call the same guest setter/event used by arrow selection so flag, name, stats, and dependent UI remain coherent. Rate-limit diagnostic output to the first N actual nation changes. Keep behind an off-by-default cvar. **No hook or data source is currently verified, so this is not yet implementable as a safe diff.** Failure modes include wrong coordinate transform/rotation, back-side or occluded markers being eligible, duplicate/coincident points, wrong candidate list, state-transition false positives, and invoking the setter with stale team IDs.
+
+**Phase 1 stop:** No diff drafted or checked. Phase 2 requires explicit user approval; until then no code changes/build/launch. User-owned readback tests remain pending.
+
+### Optional UI container format check (read-only, 2026-10-19)
+
+**VERIFIED:** The relevant `data1.big` entries have `.big` names and begin with the custom `BIGF` container signature, not Flash/Scaleform `FWS`, `CWS`, `GFX`, or `CFX`. Examples (first 16 bytes):
+
+| Entry | Strings found | First 16 bytes |
+|---|---|---|
+| `data/ui/game/screens/playnow/panels/teamselectpanel.big` | `mcConfed`, `MOVE_CUR` | `42 49 47 46 74 2b 00 00 00 00 00 07 00 00 00 62` |
+| `data/ui/game/screens/playnow/globehubscreen.big` | `GLOBE_HU`, `CONFEDER` | `42 49 47 46 f0 1f 00 00 00 00 00 03 00 00 00 38` |
+| `data/ui/game/components/teamselector.big` | `TeamSelector::initRules` | `42 49 47 46 b4 21 00 00 00 00 00 03 00 00 00 38` |
+
+Other `data1.big` entries also contain some repeated labels (`mcConfed` appears in four entries; `GLOBE_HU` in three; `MOVE_CUR` in 46). The strings are not unique callback names. **INFERRED:** These are EA UI binary/container assets rather than standalone Flash/Scaleform movies. As they are not Flash/Scaleform-signature files, the requested conditional check stops here; no claim is made about the guest UI library, cursor bridge, selection callback, or script-side picking.
+
+## Select Team nested-archive / UI library Phase 0 (2026-10-19)
+
+**VERIFIED, read-only:** The three screen/component resources inside `data1.big` are nested `.big` files with the `BIGF` signature. Their structures are not SWF/Scaleform signatures. The associated globe mesh pair is stored as `.msh`, followed immediately by two `.rx3` texture resources. The UI `.big` files contain binary EA UI data with embedded readable identifiers; their exact binary contents are intentionally not copied into notes or git. Header subfields beyond the `BIGF` marker are not decoded here.
+
+**VERIFIED, guest marker search:** Searches of the generated guest source and raw `default.xex` / `fifadllzf.xex` found no meaningful `Scaleform`, `ActionScript`, `ExternalInterface`, `fscommand`, Flash UI, or GFx API strings. The few raw `GFx`/`SWF` byte sequences in `fifadllzf.xex` occur amid high-entropy bytes with no readable string context and are not evidence of a linked library. Generated-source searches likewise found no GFx/Scaleform interface names.
+
+**INFERRED / not established:** The UI files appear to be EA-specific binary UI resources, not standalone Flash/Scaleform movies. Since no SWF/GFX signature or guest GFx bridge was established, the likely UI event mechanism and cursor/stick-to-UI interface cannot be identified from this phase. No conclusion is made about a hidden embedded script VM or its callbacks.
+
+Phase 0 only. No game launch, source/config change, or dynamic-memory tool creation. Phase 1 requires the user-ready screen and the snapshot protocol checklist before any launch.
+
+## Select Team dynamic analysis — nested UI structure and snapshot tool prepared (2026-10-19)
+
+**VERIFIED, structure only:** The inner `BIGF` directories were parsed in memory. `teamselectpanel.big` has seven inner records: five non-empty numeric-labelled records (sizes 5,272; 306; 1,815; 342; 3,124 bytes) plus two zero-length `sg` group markers. `globehubscreen.big` and `teamselector.big` each have two non-empty numeric-labelled records (each paired with a zero-length `sg2` group marker); sizes respectively 4,677/3,374 and 5,581/2,929 bytes. Non-empty payloads begin with RefPack `10 FB` framing. The main record is APT data, the constants record is APT constants; two panel payloads carry an `XPR2` resource marker. The smaller remaining panel record's subtype was not decoded. No EA payload bytes or extracted files were written to notes or git.
+
+**VERIFIED from local archive:** The APT data and constants records are packed EA binary UI resources, not standalone SWF/GFX. **INFERRED:** EA APT is a Flash-movie-derived UI format; the embedded script/constant data can encode UI behaviour, but this pass does not establish whether `MOVE_CUR`, `GLOBE_HU`, or `CONFEDER` are event dispatch names, timeline/script identifiers, or screen/component fields. Raw guest image/generated-source searches yielded no meaningful APT/GFx/Scaleform/ActionScript/ExternalInterface/fscommand bridge strings. Consequently the exact guest-to-APT cursor-input and selection-callback API remains unknown; the few `GFx`/`SWF` byte matches are uncontextual high-entropy bytes and not evidence of Scaleform.
+
+**VERIFIED tool preparation (not run against the game):** Standalone reader created outside the repo at `C:\Users\ramic\AppData\Local\Temp\opencode\team_globe_snapshot.py`; SHA-256 `DC856F0CEF812D0D3F134A1060793438B8C7EDABB0186A670D52622CCD13AD49`. Python help/import and syntax were checked; neither launch nor attach/snapshot occurred. It has explicit `--launch` safety confirmation, supports read-only `--pid` attach with an explicit arena base, uses a global F8 capture hotkey and F9 abort, and discovers a launched run's arena from its fresh log. It scans only committed mapped read/write guest virtual and XEX pages, excluding the GPU window, physical aliases, executable pages, and read-only pages. Caps: 128 MiB/state × six states = 768 MiB raw snapshots; screenshots have an additional 128 MiB aggregate cap; it refuses to start below 2 GiB free on the temp volume. Output is a timestamped folder under the approved temp root. Snapshot reads do not suspend the process; individual reads are concurrent and not atomic. Exact run-time latency and screenshot quality remain unverified. The optional NumPy diff mode decodes BE float32, signed int16 pairs/scalars, and uint32 and writes ranked candidates locally.
+
+**Phase state:** Phase 0 complete. Phase 1 tool prepared but awaiting the user's explicit `go, game is on the Select Team screen` before any launch. No source/config change, build, game launch, git push, or screenshot was made.
