@@ -6927,3 +6927,103 @@ Phase 0 only. No game launch, source/config change, or dynamic-memory tool creat
 **VERIFIED tool preparation (not run against the game):** Standalone reader created outside the repo at `C:\Users\ramic\AppData\Local\Temp\opencode\team_globe_snapshot.py`; SHA-256 `DC856F0CEF812D0D3F134A1060793438B8C7EDABB0186A670D52622CCD13AD49`. Python help/import and syntax were checked; neither launch nor attach/snapshot occurred. It has explicit `--launch` safety confirmation, supports read-only `--pid` attach with an explicit arena base, uses a global F8 capture hotkey and F9 abort, and discovers a launched run's arena from its fresh log. It scans only committed mapped read/write guest virtual and XEX pages, excluding the GPU window, physical aliases, executable pages, and read-only pages. Caps: 128 MiB/state × six states = 768 MiB raw snapshots; screenshots have an additional 128 MiB aggregate cap; it refuses to start below 2 GiB free on the temp volume. Output is a timestamped folder under the approved temp root. Snapshot reads do not suspend the process; individual reads are concurrent and not atomic. Exact run-time latency and screenshot quality remain unverified. The optional NumPy diff mode decodes BE float32, signed int16 pairs/scalars, and uint32 and writes ranked candidates locally.
 
 **Phase state:** Phase 0 complete. Phase 1 tool prepared but awaiting the user's explicit `go, game is on the Select Team screen` before any launch. No source/config change, build, game launch, git push, or screenshot was made.
+
+## Second-match UI/HUD disappearance - log audit and smallest fix (2026-10-23)
+
+**Scope:** source read-only except one default-value revert; one installed-config line added; no build and no game launch in this pass.
+
+### VERIFIED (logs)
+
+- `C:\Program Files (x86)\FIFA World Cup 2010\logs\worldcup2010_016.log` (14:47:36-15:01:48, 166,585 B) is the run that contains the second qualification match. The `[gpu]` tag appears **5 times**, all startup: adapter, D3D12 feature list, `Translated 207 shaders`, `Created 178 graphics pipelines`, `SetInterruptCallback`. There is **no** texture, render-target, EDRAM, resolve, descriptor or allocation line anywhere in the file. At `log_level = "info"` in `worldcup2010.toml:39` the GPU resource path is therefore **uninstrumented**, so log silence is not evidence that the path is correct.
+- The second scene load is visible only as asset I/O at 15:00:17 (`hairlod_0.rx3`, `banner_1337_-842150451.rx3`, `volumetric_fx_239_1.rx3` -> `0xc000000f`), i.e. the same three optional-miss entries already seen at 14:48:35 and 14:49:23 for the first load. No asset that is unique to the HUD fails to open.
+- No `Failed to create a texture descriptor` / bindless-exhaustion line, no `Failed to dump host render targets for resolve`, no device-removed line. The 512 `[error][core] ROUND30 exception` lines are the known per-thread diagnostic noise (first 8 per thread, then every 1024th).
+
+### VERIFIED (code paths that can differ between match 1 and match 2)
+
+- EDRAM ownership is **not** reset between matches: `pipeline/render_target/cache.cpp:336-341` sets a single all-empty range at init and `:343-357` only re-creates it on shutdown. So match 2 starts with tiles owned by match 1's render targets, match 1 starts with an empty map.
+- A transfer is only requested when the previous owner is non-empty: `pipeline/render_target/cache.cpp:1216` (`!transfer_source.IsEmpty() && transfer_source != dest` in `WouldOwnershipChangeRequireTransfers`). Consequently an under-claimed EDRAM extent is **harmless with an empty map and destructive with a populated one** - the exact asymmetry of "first match fine, second match broken".
+- The claimed extent is `min(render target height, EstimateMaxY(...))` (`pipeline/render_target/cache.cpp:569-575`), and it becomes `rt_lengths_tiles` (`:653-658`), which is what `ChangeOwnership` (`:689`) and `PerformTransfersAndResolveClears` (`d3d12/render_target_cache.cpp:3798`) act on.
+- `EstimateMaxY` only consults the vertex shader when `PA_CL_CLIP_CNTL.clip_disable` **and** the scissor is at the 8192 sentinel (`util/draw_extent_estimator.cpp:273-299`), i.e. for screen-space / full-screen style draws - typical for UI compositing, not for the clipped 3D pass.
+- The local tree had that estimate **forced on globally**: `util/draw_extent_estimator.cpp:27` was `true` where upstream is `false` (see `patches/rexglue-local-changes.patch`, old hunk `-...false` / `+...true`). The same option is set explicitly per title in `D:\FWC10\fifa-street-pc-port\Installer\payload\Game\fifastreet.toml:3`, so the global flip was redundant for FIFA Street and unvalidated for this title.
+- `TryResolveCopyDirectly` is not a skipped resolve: it preflights, then returns `DumpRenderTargets(...)` (`d3d12/render_target_cache.cpp:5538-5582`), and the copy shader still runs from `edram_buffer_` (`:1225-1330`). So "direct resolve silently drops the resolve" is **excluded** by code reading.
+
+### CHANGE
+
+1. `ReXGlue/src/graphics/util/draw_extent_estimator.cpp:27` - default reverted to `false` (upstream). FIFA Street keeps the behaviour through its own toml.
+2. `patches/rexglue-local-changes.patch` and `patches/rexglue-v0.3-local.patch` - the now no-op `draw_extent_estimator.cpp` section removed so a fresh `git apply` (README:42) reproduces the corrected default instead of re-introducing the flip.
+3. `C:\Program Files (x86)\FIFA World Cup 2010\worldcup2010.toml` - `execute_unclipped_draw_vs_on_cpu = false` added (line 38). `REXCVAR_GET` is evaluated per draw (`draw_extent_estimator.cpp:275`), and the string is present in the installed `rexgpu-xenos.dll`, so the A/B needs **no rebuild**.
+
+### NOT ESTABLISHED
+
+- That the HUD/loading overlay actually emits clip-disabled, 8192-scissor draws. If it does not, the fix is inert and the symptom belongs to the texture-refresh or ownership-transfer hypotheses. The next discriminators are `log_texture_uploads = true` (`d3d12/texture_cache.cpp:39-40`, plus `texture_diagnostic_directory`, `:42-43`) and, if needed, `direct_host_resolve = false`.
+- No HUD texture identity (base/format/dimension) has been observed at runtime for this title.
+## Second-match HUD: the toml was never applied, plus instrumentation (2026-10-23, later)
+
+**Scope:** instrumentation only (counters and log lines); one installed DLL replaced; installed toml repaired; no rendering behaviour changed; no game launch in this pass.
+
+### VERIFIED: the installed `worldcup2010.toml` did not parse, so no value in it was ever applied
+
+- The file on disk at `C:\Program Files (x86)\FIFA World Cup 2010\worldcup2010.toml` had mtime `2026-10-23 15:33:32`; `logs\worldcup2010_017.log` (the run the user described) starts `15:33:42.994` and the file has not been modified since. So the content on disk now is the content that run used.
+- That content contained `texture_diagnostic_directory = "C:\Users\ramic\AppData\Local\Temp\opencode\fwc10-tex"`. In TOML a basic string treats `\U` as an escape; `\U` needs 8 hex digits, and `s` follows. `toml::parse_file` therefore throws. Confirmed with the same toml++ build the runtime uses (`ReXGlue\thirdparty\tomlplusplus\toml.hpp`): `PARSE ERROR: Error while parsing unicode scalar sequence: expected hex digit, saw 's'`.
+- `LoadConfig` catches that and only logs `REXLOG_ERROR("Failed to parse config ...")` (`ReXGlue\src\core\cvar.cpp:649-651`), but it runs at `ReXGlue\src\ui\rex_app.cpp:159`, **before** `rex::InitLogging` at `:175`, so the error never reaches any log file. Every key in the file was silently ignored.
+- Consistent evidence in `worldcup2010_017.log`: `log_level = "debug"` was in that file, yet the log has **0** `[debug]` lines and **0** `Texture diagnostic:` lines, and `Loaded config: ...` (`rex_app.cpp:184`, `REXLOG_DEBUG`) is absent. The run therefore used compiled defaults for every cvar.
+- Consequence: `execute_unclipped_draw_vs_on_cpu = false` never took effect in that run (it was not even present in the file at that point), so "H1 was not sufficient" is **not** supported by that run - H1 was never tested.
+- Install location is not redirected: every binary in the folder is x64 (`machine=0x8664`), so UAC/WOW64 file virtualisation does not apply; `C:\Users\ramic\AppData\Local\VirtualStore\Program Files (x86)\FIFA World Cup 2010` does not exist; the config path is `GetExecutableFolder() / (GetName() + ".toml")` (`rex_app.cpp:107`, `:147`) and `Launcher.ps1:524` sets `WorkingDirectory` to the exe folder. Recommendation: keep the install in `C:\Program Files (x86)\FIFA World Cup 2010`; there is no evidence of redirection, and the new startup line proves the paths at runtime.
+
+### Instrumentation added (observation only)
+
+New header `ReXGlue\include\rex\graphics\hud_diagnostics.h` with monotonic counters and three cvars defined in `ReXGlue\src\graphics\graphics_system.cpp:67-74`:
+
+- `hud_diagnostics` (default false) - one cumulative `HUDDIAG frame=...` summary line per `hud_diagnostics_interval` frames.
+- `hud_diagnostics_draws` (default false) - per-draw state for UI-like draws and EDRAM extent truncation, sampled once per interval.
+- `hud_diagnostics_interval` (default 60).
+
+Hook points (all increments, no control flow changed):
+
+- Frame boundary: `d3d12\command_processor.cpp:1944` calls `diag::FrameBoundary`, which also prints the one-time startup block (`graphics_system.cpp:765-804`): host exe path, the GPU DLL path, `exe_dir`, every `*.toml` next to the exe with size and mtime, and for 12 cvars the effective value and the `Source` that wrote it (`config` / `command-line` / `environment` / `runtime` / `default`). This is printed even when `hud_diagnostics` is off, so a dead config is always visible.
+- Draw drops: viz-query predication `command_processor.cpp:1637`, packet-level failures `:1621`; in `d3d12\command_processor.cpp` no-VS `:2344`, RT update failure `:2425`, plus zero-pitch, no-effect, primitive failure, zero vertices and async-pipeline-pending counters; issued draws `:2830`.
+- Draw classification: `d3d12\command_processor.cpp:2520-2564` counts clip-disabled, viewport-transform-off, depth-test, depth-write, null-pixel-shader and "UI-like" draws (`clip_disable && index_count <= 4096`), and logs index count, primitive type, clip flag, depth state, viewport, scissor, interpolator mask and shader modification hashes.
+- EDRAM extent: `pipeline\render_target\cache.cpp:578-596` accumulates `height_used` vs the full render target height per draw and logs every truncation with both values, pitch, MSAA and `clip_disable`.
+- Ownership/transfers: `pipeline\render_target\cache.cpp:716-729` (transfer rectangles requested per draw) and `:1289` (ownership changes); executed dispatches at `d3d12\render_target_cache.cpp:3811`.
+- Resolves: `d3d12\render_target_cache.cpp:1168` (calls), failures at `:1177` and `:1225`, direct/fallback at `:1209-1212`; EDRAM copies at `d3d12\command_processor.cpp:2985`.
+- Textures: invalidation `pipeline\texture\cache.cpp:742` (`Texture::WatchCallback`), uploads/failures in `CommitPreparedTextureLoad` (`:453` / `:443`), evictions in `CompletedSubmissionUpdated` (`:302`), `ClearCache` calls (`:254`); descriptor failures and bindless exhaustion at `d3d12\texture_cache.cpp:2303-2304` and `:2329`.
+- Render target creation counter in `RenderTargetCache::GetOrCreateRenderTarget`.
+
+### Build and install
+
+- Built `rexgpu-xenos:Release` from the current tree (clang 18, Ninja, `out\build\win-amd64\build-Release.ninja`), 0 errors. `rex_app.cpp` is compiled into the game **exe**, not `rexruntime.dll` (verified: the string `Graphics presentation setup failed` exists only in `FIFA World Cup 2010.exe`), so the startup line lives in the GPU DLL instead of requiring a game rebuild.
+- Installed DLL: `C:\Program Files (x86)\FIFA World Cup 2010\rexgpu-xenos.dll`, 3,007,488 B, 2026-10-23 16:15:50. Backup of the previous DLL: `D:\FWC10\backups\rexgpu-xenos-20261023-prehuddiag.dll`.
+- The build also contains the `draw_extent_estimator.cpp:27` default revert (`false`), so this run tests H1 with the cvar actually at `false` for the first time.
+- The installed toml was rewritten as valid TOML (`41 top-level keys`, verified with `tomlcheck`): the path is now a literal string (`'C:\...'`), `log_texture_uploads = false`, `log_level = "info"`, `execute_unclipped_draw_vs_on_cpu = false`, `hud_diagnostics = true`, `hud_diagnostics_draws = true`, `hud_diagnostics_interval = 120`.
+
+### Ranked hypotheses and the counter that discriminates each
+
+1. Config never applied (now excluded by the startup line: `source=config`).
+2. Viz-query predication drops the HUD draws before the backend: `viz` rate rises while `draws` falls.
+3. EDRAM extent truncation plus ownership transfer between the 3D and UI passes: `trunc`, `ext_permille` (< 1000), `xfer` / `xfer_disp` change rate at the transition.
+4. Resolve side: `resfail` > 0, or `fb` (direct-resolve fallback) rate changes.
+5. Stale HUD atlas: `inval` grows without a matching `up` growth, or `upfail` rises.
+6. Descriptor exhaustion: `desc fail` / `exhaust` > 0.
+7. Other backend drops: `novs`, `zpitch`, `nofx`, `noprim`, `rtfail`, `pending`, `primfail`, `failed_total`.
+
+**NOT ESTABLISHED:** which of 2-7 is active; that the loading-screen UI and the in-match HUD share a draw path; the actual EDRAM extent used by HUD draws.
+### Run 021-024: the HUD is drawn, and the draw state is identical to a working match
+
+- **The HUD passes are present in the broken state.** Run 023 (`dump=120`) compares match 1 @frame 36480 with match 2 @frame 44880: `ps=7ABDFEFB`, texture `0/08024802/0F0D9086/001FE3FF` (1024x256 at `0x0F0D9000`), `blend=07060706`, `cctl=8700000C`, `cmask=F`, `rtD=2D0/1`, `pitch=1280`, `vp=sc=(0,0,1280,720)` - all identical. So nothing is being dropped or culled on the emulator side.
+- **The resolve chain is identical too**: 30 `HUDDIAG copy` records with the same addresses, lengths and order in both frames, frontbuffer copy (`13AB8000`, 3768320 B) last.
+- **The pause menu in the broken match renders perfectly** (screenshot 2026-10-24 13:48, `wc_match3_pause.png`): panel, flags, button highlight, text, EA/FIFA branding - from the *same* `7ABDFEFB` shader and the *same* `0x0F0D9000` texture. The atlas, blend state, RT path and shader translation are therefore healthy; only the HUD's own geometry can differ.
+- **The failure is cumulative, not "match 2".** It appeared in match 2 on the 13:26 DLL and in match 3 on the 14:31 DLL (diagnostics-only changes), so the trigger is per-session state, not a match index.
+- **Pass histogram overflow invalidated earlier presence/absence claims**: with the key including the sampled texture, 128 slots (`graphics_system.cpp:694`) overflowed by 25-47 entries in *every* match frame. Raised to 512; runs 020 and 023 predate this and their "missing pass" observations must not be used.
+- **`HUDDIAG texdata` was reading 4 bytes/pixel on an 8-bit linear texture** (1 MB instead of 256 KB), so its monotonically growing `nz` was an artefact of reading past the texture. It is not evidence about atlas content and should be re-derived if needed.
+
+### Open: per-draw geometry, and the vertex upload path
+
+- Remaining inputs that can differ for an otherwise identical pass: vertex buffers/index buffer, shader constants. Constants are uploaded per draw through `UpdateBindings` and work for the pause menu, so geometry is the lead.
+- `D3D12CommandProcessor::IssueDraw` calls `SharedMemory::RequestRange` for a vertex buffer **only when its address or size changed** (`d3d12\command_processor.cpp:2695-2698`); the range is an upload/copy (`include\rex\graphics\shared_memory.h:77-81`), refreshed when guest pages are marked dirty. A missed invalidation keeps a stale copy on the host.
+- Instrumentation added: `HUDDIAG hudvtx vf= ic= addr= size= hashed= nz= hash=` (once per dump frame for `ps=7ABDFEFB`), hashing up to 512 bytes of each used guest vertex buffer via `constant_register_map().vertex_fetch_bitmap`.
+
+---
+
+## Online Multiplayer Architecture & Reconnaissance (Phase A)
+See master documentation in `D:\FWC10\NOTES.md` for full audit tables, UI architecture analysis, XAM/XNet call sites, and multiplayer implementation design.
+

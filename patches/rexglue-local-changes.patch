@@ -5251,19 +5251,6 @@ index ec0df7c..2ac72b9 100644
    return std::make_pair(page_first << page_size_log2_, (page_last - page_first + 1)
                                                             << page_size_log2_);
  }
-diff --git a/src/graphics/util/draw_extent_estimator.cpp b/src/graphics/util/draw_extent_estimator.cpp
-index 3027dc8..54f77a9 100644
---- a/src/graphics/util/draw_extent_estimator.cpp
-+++ b/src/graphics/util/draw_extent_estimator.cpp
-@@ -24,7 +24,7 @@
- #include <rex/memory.h>
- #include <rex/ui/graphics_util.h>
- 
--REXCVAR_DEFINE_BOOL(execute_unclipped_draw_vs_on_cpu, false, "GPU",
-+REXCVAR_DEFINE_BOOL(execute_unclipped_draw_vs_on_cpu, true, "GPU",
-                     "Execute unclipped draw vertex shader on CPU");
- 
- REXCVAR_DEFINE_BOOL(execute_unclipped_draw_vs_on_cpu_with_scissor, false, "GPU",
 diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
 index 001f36b..f2af0d9 100644
 --- a/src/graphics/vulkan/command_processor.cpp
@@ -7202,7 +7189,7 @@ index 697399c..f609238 100644
 +
    auto normalized = NormalizeGuestPath(guest_path);
 +
-+  // Primeiro tenta correspondência exata.
++  // Primeiro tenta correspond?ncia exata.
    for (const auto& info : recompiled_modules_) {
 -    if (info.guest_path == normalized)
 +    if (info.guest_path == normalized) {
