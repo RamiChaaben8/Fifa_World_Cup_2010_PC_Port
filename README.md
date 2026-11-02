@@ -11,13 +11,7 @@ some game paths may stop on missing recompiled functions or other compatibility 
 
 ### Installing from your own ISO (Windows x64)
 
-Download and run `FIFA-World-Cup-2010-Setup-v0.3.exe` (or `FIFA-World-Cup-2010-Installer-v2.zip`) from the GitHub v0.3 release, then select
-your legally obtained Xbox 360 ISO and an empty parent folder. Setup creates `FIFA World Cup 2010`
-inside the folder you choose. The single-file installer embeds LLVM and the pinned ReXGlue source
-and builds the port locally; it does not include your ISO/game data. Visual Studio C++ Build Tools
-are still downloaded from Microsoft if they are not already installed. The first run may take a
-while and several gigabytes of disk space. Approve the Microsoft UAC prompt if Build Tools or a
-protected install location require it. When setup completes, run `Settings.exe` in the chosen folder.
+Download the **v0.7** online or offline installer from the [GitHub Releases page](https://github.com/RamiChaaben8/Fifa_World_Cup_2010_PC_Port/releases/latest), then select your legally obtained Xbox 360 ISO and an install folder. Both installers compile the port locally from your ISO; no ISO, game data, or generated game code is included. The online installer downloads missing build tools, while the offline installer bundles LLVM and the ReXGlue SDK (Visual Studio C++ Build Tools must already be installed). When setup completes, configure the game with `Settings.exe` in the install folder.
 
 ### Launcher
 
