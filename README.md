@@ -67,6 +67,55 @@ powershell -ExecutionPolicy Bypass -File "Installer\BuildWorldCup2010.ps1" `
 Use `-Workspace` to point at an existing codegen output directory so codegen is not
 re-run on incremental builds. The first run runs codegen (~10 min) and compiles (~8 min).
 
+## DLC and saves from your own console
+
+The game can use its official downloadable content (kits, balls, adboards) and save files,
+such as squad files, copied from **your own** Xbox 360. Nothing is included here: you supply
+the packages. These are the files under `Content\0000000000000000\454108E4\00000002\` (DLC) or
+`Content\<profile>\454108E4\00000001\` (saves) on the console drive.
+
+`tools\install_xcontent.py` (Python 3) extracts those STFS packages into the folder the port
+reads. It does not change the game or the runtime, and needs no rebuild.
+
+### Common uses
+
+| What you want | Package to install | Where it shows up in game |
+|---|---|---|
+| **Updated squads / rosters** | A squad save, e.g. `Squads0 <date>` (type `00000001`, a `CON` file) | Load it from the game's squad load/save menu. It then replaces the active squads. |
+| **Official kits update** | DLC *Official Kits Update* | New kits for the updated teams (e.g. Chile, Honduras, North Korea, Peru) in team/kit selection and matches |
+| **Extra balls** | DLC *Flag Themed Ball Updates* | Additional balls in the match settings ball selection |
+| **Tournament adboards** | DLC *Adboards* | Pitch-side advertising boards in stadiums |
+
+Notes on squads:
+
+- A squad file is a **save**, not DLC, so console unlock tools such as XM360 do not apply to it.
+  In the port it only needs to be installed like any other package.
+- When the game loads a squad file, it saves it again as a new `Squads0 <current date>` and
+  removes the old entry. Keep your original package if you want to install it again later.
+- Squad files made by another region of the game (e.g. the German "2010 FIFA WM") have loaded
+  in testing, but this is not guaranteed for every file.
+
+### Usage
+
+```powershell
+# Show what a package or folder contains (writes nothing)
+py tools\install_xcontent.py --list "<folder with your packages>"
+
+# Install into %USERPROFILE%\Documents\FIFA World Cup 2010
+py tools\install_xcontent.py "<folder with your packages>"
+```
+
+- DLC is installed to `0000000000000000\454108E4\00000002\<package>\`, and saves to
+  `B13EBABEBABEBABE\454108E4\00000001\<package>\` (the port's local profile). Each package also
+  gets a `Headers\...\<package>.header` file.
+- Use `--root <dir>` for a different save location and `--profile-xuid <hex>` for a different
+  profile.
+- Re-running the tool overwrites only the packages you pass it. To uninstall, delete the
+  package folder and its `.header` file.
+- Packages from another console do not need XM360 or any other unlock tool; the port does not
+  check console signatures.
+- Tested with the kits, balls and adboards DLC and a 2010 squad file.
+
 ## License
 
 This repository is released under the MIT License — see [LICENSE](LICENSE).

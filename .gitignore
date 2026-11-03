@@ -6,6 +6,10 @@ dist/
 *.big
 *.bh
 
+# Xbox 360 content packages (DLC, saves) – user-owned, never commit
+454108E4/
+xcontent/
+
 # Build output / binaries
 *.exe
 !Settings.exe
