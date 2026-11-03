@@ -3,8 +3,8 @@
 This project contains no game files, game data or generated game code. It requires your own
 legally obtained copy of the game. It is an unofficial, experimental, incomplete work in
 progress, not affiliated with or endorsed by EA. Game and club names are trademarks of their
-owners. Based on [fifa-street-pc-port](https://github.com/SAMUELITODAVILA/fifa-street-pc-port)
-and the [ReXGlue SDK](https://github.com/RexGlue/ReXGlue). This remains an experimental port;
+owners. Based on [fifa-street-pc-port](https://github.com/samuelit0davila/fifa-street-pc-port)
+and the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk). This remains an experimental port;
 some game paths may stop on missing recompiled functions or other compatibility issues.
 
 ## Building
@@ -74,8 +74,11 @@ such as squad files, copied from **your own** Xbox 360. Nothing is included here
 the packages. These are the files under `Content\0000000000000000\454108E4\00000002\` (DLC) or
 `Content\<profile>\454108E4\00000001\` (saves) on the console drive.
 
-`tools\install_xcontent.py` (Python 3) extracts those STFS packages into the folder the port
-reads. It does not change the game or the runtime, and needs no rebuild.
+Two tools extract those STFS packages into the folder the port reads. Both produce identical
+files, do not change the game or the runtime, and need no rebuild:
+
+- **`InstallDLC.exe`**: a small window for players. No Python or command line needed.
+- **`tools\install_xcontent.py`**: the same as a Python 3 script, for scripting and advanced use.
 
 ### Common uses
 
@@ -95,7 +98,29 @@ Notes on squads:
 - Squad files made by another region of the game (e.g. the German "2010 FIFA WM") have loaded
   in testing, but this is not guaranteed for every file.
 
-### Usage
+### Using InstallDLC.exe
+
+1. Copy the packages from your console to a folder on your PC (for example the whole
+   `454108E4` folder).
+2. Open `InstallDLC.exe` and choose that folder under **1. Folder with your packages**.
+3. The list shows each package with its type (DLC, Squads) and status: *Ready*,
+   *Already installed* or *Skipped* (for example, content for another game). Tick what you want
+   and press **Install selected**.
+4. Start the game. DLC loads automatically; squads are loaded from the game's squad menu.
+
+Leave **2. Game save folder** at its default (`Documents\FIFA World Cup 2010`) unless you
+moved it. To pre-select a folder, pass it as an argument: `InstallDLC.exe "<folder>"`. A
+launcher or script can also install without a window:
+`InstallDLC.exe --install "<file or folder>" [--root "<dir>"]`. This returns `0` on success.
+
+Build it with the C# compiler included in Windows (no Visual Studio needed):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\XContentInstaller\Build.ps1
+# -> tools\XContentInstaller\bin\InstallDLC.exe
+```
+
+### Using the Python script
 
 ```powershell
 # Show what a package or folder contains (writes nothing)
@@ -105,12 +130,15 @@ py tools\install_xcontent.py --list "<folder with your packages>"
 py tools\install_xcontent.py "<folder with your packages>"
 ```
 
+Use `--root <dir>` for a different save location and `--profile-xuid <hex>` for a different
+profile.
+
+### Notes
+
 - DLC is installed to `0000000000000000\454108E4\00000002\<package>\`, and saves to
-  `B13EBABEBABEBABE\454108E4\00000001\<package>\` (the port's local profile). Each package also
-  gets a `Headers\...\<package>.header` file.
-- Use `--root <dir>` for a different save location and `--profile-xuid <hex>` for a different
-  profile.
-- Re-running the tool overwrites only the packages you pass it. To uninstall, delete the
+  `B13EBABEBABEBABE\454108E4\00000001\<package>\` (the port's local profile), both under
+  `Documents\FIFA World Cup 2010`. Each package also gets a `Headers\...\<package>.header` file.
+- Re-running either tool overwrites only the packages you give it. To uninstall, delete the
   package folder and its `.header` file.
 - Packages from another console do not need XM360 or any other unlock tool; the port does not
   check console signatures.
