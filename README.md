@@ -3,8 +3,8 @@
 This project contains no game files, game data or generated game code. It requires your own
 legally obtained copy of the game. It is an unofficial, experimental, incomplete work in
 progress, not affiliated with or endorsed by EA. Game and club names are trademarks of their
-owners. Based on [fifa-street-pc-port](https://github.com/SAMUELITODAVILA/fifa-street-pc-port)
-and the [ReXGlue SDK](https://github.com/RexGlue/ReXGlue). This remains an experimental port;
+owners. Based on [fifa-street-pc-port](https://github.com/samuelit0davila/fifa-street-pc-port)
+and the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk). This remains an experimental port;
 some game paths may stop on missing recompiled functions or other compatibility issues.
 
 ## Building
@@ -66,6 +66,83 @@ powershell -ExecutionPolicy Bypass -File "Installer\BuildWorldCup2010.ps1" `
 
 Use `-Workspace` to point at an existing codegen output directory so codegen is not
 re-run on incremental builds. The first run runs codegen (~10 min) and compiles (~8 min).
+
+## DLC and saves from your own console
+
+The game can use its official downloadable content (kits, balls, adboards) and save files,
+such as squad files, copied from **your own** Xbox 360. Nothing is included here: you supply
+the packages. These are the files under `Content\0000000000000000\454108E4\00000002\` (DLC) or
+`Content\<profile>\454108E4\00000001\` (saves) on the console drive.
+
+Two tools extract those STFS packages into the folder the port reads. Both produce identical
+files, do not change the game or the runtime, and need no rebuild:
+
+- **`InstallDLC.exe`**: a small window for players. No Python or command line needed.
+- **`tools\install_xcontent.py`**: the same as a Python 3 script, for scripting and advanced use.
+
+### Common uses
+
+| What you want | Package to install | Where it shows up in game |
+|---|---|---|
+| **Updated squads / rosters** | A squad save, e.g. `Squads0 <date>` (type `00000001`, a `CON` file) | Load it from the game's squad load/save menu. It then replaces the active squads. |
+| **Official kits update** | DLC *Official Kits Update* | New kits for the updated teams (e.g. Chile, Honduras, North Korea, Peru) in team/kit selection and matches |
+| **Extra balls** | DLC *Flag Themed Ball Updates* | Additional balls in the match settings ball selection |
+| **Tournament adboards** | DLC *Adboards* | Pitch-side advertising boards in stadiums |
+
+Notes on squads:
+
+- A squad file is a **save**, not DLC, so console unlock tools such as XM360 do not apply to it.
+  In the port it only needs to be installed like any other package.
+- When the game loads a squad file, it saves it again as a new `Squads0 <current date>` and
+  removes the old entry. Keep your original package if you want to install it again later.
+- Squad files made by another region of the game (e.g. the German "2010 FIFA WM") have loaded
+  in testing, but this is not guaranteed for every file.
+
+### Using InstallDLC.exe
+
+1. Copy the packages from your console to a folder on your PC (for example the whole
+   `454108E4` folder).
+2. Open `InstallDLC.exe` and choose that folder under **1. Folder with your packages**.
+3. The list shows each package with its type (DLC, Squads) and status: *Ready*,
+   *Already installed* or *Skipped* (for example, content for another game). Tick what you want
+   and press **Install selected**.
+4. Start the game. DLC loads automatically; squads are loaded from the game's squad menu.
+
+Leave **2. Game save folder** at its default (`Documents\FIFA World Cup 2010`) unless you
+moved it. To pre-select a folder, pass it as an argument: `InstallDLC.exe "<folder>"`. A
+launcher or script can also install without a window:
+`InstallDLC.exe --install "<file or folder>" [--root "<dir>"]`. This returns `0` on success.
+
+Build it with the C# compiler included in Windows (no Visual Studio needed):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\XContentInstaller\Build.ps1
+# -> tools\XContentInstaller\bin\InstallDLC.exe
+```
+
+### Using the Python script
+
+```powershell
+# Show what a package or folder contains (writes nothing)
+py tools\install_xcontent.py --list "<folder with your packages>"
+
+# Install into %USERPROFILE%\Documents\FIFA World Cup 2010
+py tools\install_xcontent.py "<folder with your packages>"
+```
+
+Use `--root <dir>` for a different save location and `--profile-xuid <hex>` for a different
+profile.
+
+### Notes
+
+- DLC is installed to `0000000000000000\454108E4\00000002\<package>\`, and saves to
+  `B13EBABEBABEBABE\454108E4\00000001\<package>\` (the port's local profile), both under
+  `Documents\FIFA World Cup 2010`. Each package also gets a `Headers\...\<package>.header` file.
+- Re-running either tool overwrites only the packages you give it. To uninstall, delete the
+  package folder and its `.header` file.
+- Packages from another console do not need XM360 or any other unlock tool; the port does not
+  check console signatures.
+- Tested with the kits, balls and adboards DLC and a 2010 squad file.
 
 ## License
 
