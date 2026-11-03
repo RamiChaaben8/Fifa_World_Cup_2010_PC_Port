@@ -250,6 +250,18 @@ New-Item `
 
 Copy-Item $exe $Output -Force
 
+# The runtime resolves optional UI sounds from GameData/metadata. Keep the
+# source filename (Sequence 01.wav) as the only build input, but deploy it
+# under the stable runtime name used by the achievement toast.
+$achievementSound = Join-Path (Split-Path -Parent $PSScriptRoot) 'sounds\Sequence 01.wav'
+if (Test-Path -LiteralPath $achievementSound -PathType Leaf) {
+    $soundDirectory = Join-Path $Output 'GameData\metadata\sounds'
+    New-Item -ItemType Directory -Path $soundDirectory -Force | Out-Null
+    Copy-Item -LiteralPath $achievementSound -Destination (Join-Path $soundDirectory 'achievement_unlock.wav') -Force
+} else {
+    Write-Warning "Achievement sound source not found; continuing without it: $achievementSound"
+}
+
 # Copy the recompiled game modules.
 Get-ChildItem -LiteralPath $buildFolder -Filter '*.dll' -File |
     Where-Object { $_.Name -notin @('rexruntime.dll', 'rexgpu-xenos.dll') } |
