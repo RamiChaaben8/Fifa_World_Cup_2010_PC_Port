@@ -254,6 +254,10 @@ Copy-Item $exe $Output -Force
 # source filename (Sequence 01.wav) as the only build input, but deploy it
 # under the stable runtime name used by the achievement toast.
 $achievementSound = Join-Path (Split-Path -Parent $PSScriptRoot) 'sounds\Sequence 01.wav'
+if (!(Test-Path -LiteralPath $achievementSound -PathType Leaf)) {
+    # Release installer packages keep the source WAV alongside this builder.
+    $achievementSound = Join-Path $PSScriptRoot 'sounds\Sequence 01.wav'
+}
 if (Test-Path -LiteralPath $achievementSound -PathType Leaf) {
     $soundDirectory = Join-Path $Output 'GameData\metadata\sounds'
     New-Item -ItemType Directory -Path $soundDirectory -Force | Out-Null

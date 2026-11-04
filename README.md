@@ -11,7 +11,7 @@ some game paths may stop on missing recompiled functions or other compatibility 
 
 ### Installing from your own ISO (Windows x64)
 
-Download the **v0.7** online or offline installer from the [GitHub Releases page](https://github.com/RamiChaaben8/Fifa_World_Cup_2010_PC_Port/releases/latest), then select your legally obtained Xbox 360 ISO and an install folder. Both installers compile the port locally from your ISO; no ISO, game data, or generated game code is included. The online installer downloads missing build tools, while the offline installer bundles LLVM and the ReXGlue SDK (Visual Studio C++ Build Tools must already be installed). When setup completes, configure the game with `Settings.exe` in the install folder.
+Download the **v0.8** online or offline installer from the [GitHub Releases page](https://github.com/RamiChaaben8/Fifa_World_Cup_2010_PC_Port/releases/latest), then select your legally obtained Xbox 360 ISO and an install folder. Both installers compile the port locally from your ISO; no ISO, game data, or generated game code is included. The online installer downloads missing build tools, while the offline installer bundles LLVM and the ReXGlue SDK (Visual Studio C++ Build Tools must already be installed). When setup completes, configure the game with `Settings.exe` in the install folder.
 
 ### Launcher
 
