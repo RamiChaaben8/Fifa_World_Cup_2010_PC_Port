@@ -133,6 +133,21 @@ trap {
     throw $_
 }
 
+# fifadllzf.xex is laid out differently in the PAL and USA/Asia releases (default.xex
+# is identical), so the function overrides and the Round 32 hook are region-specific.
+# PAL (462676f9...) keeps config/fifadllzf_overrides.toml and the hook unchanged.
+$usaAsiaFifaDllSha256 = '701b4737d057b64a228fc8fdbe7a83546fe4b5078ef728b239176fcaa617c1da'
+$isUsaAsia = (Get-InputSha256 $fifaDll) -eq $usaAsiaFifaDllSha256
+$extraCxxDefines = ''
+if ($isUsaAsia) {
+    Write-Host "fifadllzf.xex: USA/Asia release - using config/fifadllzf_overrides_usa.toml"
+    $workConfig = Join-Path $workProject 'config'
+    Copy-Item -LiteralPath (Join-Path $workConfig 'fifadllzf_overrides_usa.toml') `
+        -Destination (Join-Path $workConfig 'fifadllzf_overrides.toml') -Force
+    # 0x8323FB38 is a different function in the USA/Asia fifadllzf.xex.
+    $extraCxxDefines = ' -DREX_R32_DISABLE_QI_CHAIN_OVERRIDE=1'
+}
+
 Write-Host "[2/6] Preparing manifest..."
 
 $manifestPath = Join-Path $workProject "worldcup2010_manifest.toml"
@@ -213,7 +228,7 @@ try {
     }
     Invoke-BuildTool 'cmake' (@('--preset', 'win-amd64-release') + $sdkArguments + @(
         "-DCMAKE_C_COMPILER=$clang",
-        "-DCMAKE_CXX_COMPILER=$clangxx", '-DCMAKE_C_FLAGS=-mssse3', '-DCMAKE_CXX_FLAGS=-mssse3')
+        "-DCMAKE_CXX_COMPILER=$clangxx", '-DCMAKE_C_FLAGS=-mssse3', "-DCMAKE_CXX_FLAGS=-mssse3$extraCxxDefines")
     )
 
     Write-Host ""
